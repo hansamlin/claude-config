@@ -38,6 +38,20 @@ append_handoff_call() { # append_handoff_call <transcript> [skill_name]
           message:{content:[{type:"tool_use", name:"Skill", input:{skill:$s}}]}}' >> "$1"
 }
 
+# 附加一筆 compact 邊界（實測是頂層 isCompactSummary，掛在 user 訊息上）
+append_compact_boundary() {
+    jq -n '{type:"user", isSidechain:false, isCompactSummary:true,
+            message:{role:"user", content:"This session is being continued..."}}' >> "$1"
+}
+
+# 附加一筆主線 assistant usage
+append_usage() { # append_usage <transcript> <total>
+    jq -n --argjson t "$2" \
+        '{type:"assistant", isSidechain:false,
+          message:{usage:{input_tokens:$t, cache_creation_input_tokens:0,
+                          cache_read_input_tokens:0, output_tokens:0}}}' >> "$1"
+}
+
 run() { # run <session_id> <transcript> [agent_id] [agent_type]
     jq -n --arg s "$1" --arg t "$2" --arg a "${3:-}" --arg ty "${4:-}" \
         '{session_id:$s, transcript_path:$t, cwd:"/tmp",
@@ -65,11 +79,14 @@ check() { # check <label> <expected-substring|EMPTY> <actual>
 export CC_HANDOFF_THRESHOLD=300000
 export CC_HANDOFF_MAX_NAGS=3
 
-echo "── 1. subagent 不觸發（agent_id / agent_type 兩種都要擋）"
+echo "── 1. subagent 不觸發，但 --agent 啟動的主 session 要觸發"
 make_transcript 999999 "" "$TMP/t1.jsonl"
 check "payload 帶 agent_id → 靜默" EMPTY "$(run sess-1 "$TMP/t1.jsonl" subagent-uuid)"
-check "只帶 agent_type → 也要靜默" EMPTY "$(run sess-1b "$TMP/t1.jsonl" "" Explore)"
 check "未動用主 session 的催告額度" EMPTY "$(ls "$CC_HANDOFF_STATE_DIR"/nags-sess-1 2>/dev/null)"
+# agent_id 只在 subagent 內出現；`claude --agent foo` 的主 session 只帶
+# agent_type，連它一起擋會讓那種 session 永遠不交接
+check "只帶 agent_type（--agent 主 session）→ 照常觸發" "handoff" \
+    "$(ctx "$(run sess-1b "$TMP/t1.jsonl" "" Explore)")"
 
 echo "── 2. transcript 不存在"
 check "靜默不觸發" EMPTY "$(run sess-2 "$TMP/nope.jsonl")"
@@ -134,15 +151,42 @@ jq -n '{type:"assistant", isSidechain:true,
     >> "$TMP/t9b.jsonl"
 check "sidechain 裡的 handoff 不算數" "handoff" "$(ctx "$(run sess-9b "$TMP/t9b.jsonl")")"
 
-echo "── 10. PostCompact reset → 清掉催告記錄可重新催"
+echo "── 10. compact 邊界：用量必須從邊界之後重算"
+# 這個 hook 在使用者送出訊息當下跑，那時 transcript 還沒有任何 compact 之後的
+# assistant 訊息。直接取最後一筆會讀到 compact 前的舊數字，害使用者為了繼續
+# 工作而 compact，卻換來下一則訊息被劫持去做多餘的交接。
+make_transcript 310000 "" "$TMP/t10.jsonl"
+append_compact_boundary "$TMP/t10.jsonl"
+out10=$(run sess-10 "$TMP/t10.jsonl")
+check "邊界後還沒有 usage → 靜默放行" EMPTY "$out10"
+check "未動用催告額度" EMPTY "$(ls "$CC_HANDOFF_STATE_DIR"/nags-sess-10 2>/dev/null)"
+
+make_transcript 310000 "" "$TMP/t10b.jsonl"
+append_compact_boundary "$TMP/t10b.jsonl"
+append_usage "$TMP/t10b.jsonl" 48714
+check "邊界後用量已塌回 48k → 靜默放行" EMPTY "$(run sess-10b "$TMP/t10b.jsonl")"
+
+make_transcript 310000 "" "$TMP/t10c.jsonl"
+append_compact_boundary "$TMP/t10c.jsonl"
+append_usage "$TMP/t10c.jsonl" 320000
+check "邊界後又漲回 320k → 照常觸發" "handoff" "$(ctx "$(run sess-10c "$TMP/t10c.jsonl")")"
+
+make_transcript 310000 "" "$TMP/t10d.jsonl"
+append_handoff_call "$TMP/t10d.jsonl"
+append_compact_boundary "$TMP/t10d.jsonl"
+append_usage "$TMP/t10d.jsonl" 320000
+check "邊界前的 handoff 不算數，邊界後要重新催" "handoff" \
+    "$(ctx "$(run sess-10d "$TMP/t10d.jsonl")")"
+
+echo "── 11. PostCompact reset → 清掉催告記錄可重新催"
 jq -n '{session_id:"sess-4", hook_event_name:"PostCompact", trigger:"manual"}' | bash "$RESET"
 check "nags 記錄已清除" EMPTY "$(ls "$CC_HANDOFF_STATE_DIR"/nags-sess-4 2>/dev/null)"
 check "清除後重新注入指示" "handoff" "$(ctx "$(run sess-4 "$TMP/t4.jsonl")")"
 
-echo "── 11. CC_HANDOFF_DISABLE=1"
+echo "── 12. CC_HANDOFF_DISABLE=1"
 check "完全停用" EMPTY "$(CC_HANDOFF_DISABLE=1 run sess-11 "$TMP/t4.jsonl")"
 
-echo "── 12. 輸出為合法 JSON"
+echo "── 13. 輸出為合法 JSON"
 check "觸發時輸出可被 jq 解析" "hookSpecificOutput" \
     "$(run sess-12 "$TMP/t4.jsonl" | jq -r 'keys | join(",")')"
 

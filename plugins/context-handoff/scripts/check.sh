@@ -35,10 +35,13 @@ input=$(cat)
 jq_in() { printf '%s' "$input" | jq -r "$1" 2>/dev/null; }
 
 # subagent 也會收到 UserPromptSubmit，但它的 context 與主 session 無關，
-# 交接要等主 agent 接手才有意義。agent_id / agent_type 兩個都認：文件說
-# subagent 的 payload 會帶這兩個欄位，只認一個的話萬一另一個才是實際帶的，
-# 就會在 subagent 裡誤觸發、把主 session 的交接額度用掉且完全靜默。
-[ -n "$(jq_in '.agent_id // ""')$(jq_in '.agent_type // ""')" ] && exit 0
+# 交接要等主 agent 接手才有意義。
+#
+# 只認 agent_id 不認 agent_type：文件寫 agent_id「present only when the hook
+# fires inside a subagent call」，而 `claude --agent foo` 啟動的**主** session
+# 帶的是 agent_type。連 agent_type 一起擋的話，那種 session 會永遠不觸發——
+# 正是這個 plugin 原本 bg 排除那個 bug 的翻版。
+[ -n "$(jq_in '.agent_id // ""')" ] && exit 0
 
 transcript=$(jq_in '.transcript_path // ""')
 session_id=$(jq_in '.session_id // ""')
@@ -46,15 +49,27 @@ session_id=$(jq_in '.session_id // ""')
 [ -n "$session_id" ] || exit 0
 
 # 目前 context 大小＝最後一筆「非 sidechain」assistant 訊息的 usage 總和。
+#
 # isSidechain 過濾是必要的：一旦跑過 subagent，最後一筆會是 subagent 的小
 # context，門檻就永遠不會到。
+#
+# compact 邊界（頂層 isCompactSummary == true）之後要歸零重算，否則會誤觸發：
+# 這個 hook 在使用者送出訊息的當下跑，那時 transcript 裡還沒有任何 compact
+# 之後的 assistant 訊息——append-only 的結構決定了使用者的 prompt 一定排在
+# compact 後第一筆 assistant 之前——直接取最後一筆會讀到 compact **前**的
+# 舊數字。使用者為了繼續工作才去 compact，卻換來下一則訊息被劫持去做一次
+# 多餘的交接。邊界之後還沒有 usage 就視為未達門檻，靜默放行。
+# （舊版 Stop hook 天然免疫：它在整輪結束後才跑，那時新數字已經寫進去了。）
 used=$(jq -r '
-    select(.type == "assistant" and (.isSidechain != true) and .message.usage != null)
-    | (.message.usage.input_tokens // 0)
-    + (.message.usage.cache_creation_input_tokens // 0)
-    + (.message.usage.cache_read_input_tokens // 0)
-    + (.message.usage.output_tokens // 0)
-' "$transcript" 2>/dev/null | tail -1)
+    if (.isCompactSummary == true) then
+        "R"
+    elif (.type == "assistant" and (.isSidechain != true) and .message.usage != null) then
+        ((.message.usage.input_tokens // 0)
+        + (.message.usage.cache_creation_input_tokens // 0)
+        + (.message.usage.cache_read_input_tokens // 0)
+        + (.message.usage.output_tokens // 0) | tostring)
+    else empty end
+' "$transcript" 2>/dev/null | awk '/^R$/ { v = ""; next } { v = $0 } END { print v }')
 
 case "$used" in
     '' | *[!0-9]*) exit 0 ;;
@@ -67,12 +82,15 @@ esac
 # 催一次就記帳收手的話，模型忽略一次就等於這個 session 再也不會交接。
 # 只看尾端一段：compact 之後 context 會塌回去，先前那次 handoff 早就過期，
 # 掃全檔會讓舊記錄永遠壓住後續的觸發。
-if tail -n "$LOOKBACK" "$transcript" 2>/dev/null | jq -r '
-    select(.type == "assistant" and (.isSidechain != true))
-    | .message.content[]?
-    | select(.type == "tool_use" and .name == "Skill")
-    | .input.skill // ""
-' 2>/dev/null | grep -q 'handoff'; then
+if [ "$(tail -n "$LOOKBACK" "$transcript" 2>/dev/null | jq -r '
+    if (.isCompactSummary == true) then
+        "R"
+    elif (.type == "assistant" and (.isSidechain != true)) then
+        (.message.content[]?
+         | select(.type == "tool_use" and .name == "Skill")
+         | .input.skill // "")
+    else empty end
+' 2>/dev/null | awk '/^R$/ { done = 0; next } /handoff/ { done = 1 } END { print done + 0 }')" = "1" ]; then
     jq -n --argjson used "$used" '
     { systemMessage: "⚠️ 已交接過，context 目前約 \($used) tokens，建議盡快開新 session。" }'
     exit 0
