@@ -7,11 +7,13 @@
 # 掛上去會在壓縮根本沒發生時誤清 armed 狀態。PostCompact 才代表真的壓縮完成。
 set -uo pipefail
 
+STATE_DIR="${CC_HANDOFF_STATE_DIR:-$HOME/.claude/handoff-state}"
+
 session_id=$(cat | jq -r '.session_id // ""' 2>/dev/null)
 [ -n "$session_id" ] || exit 0
 
-rm -f "$HOME/.claude/handoff-state/armed-$session_id" \
-      "$HOME/.claude/handoff-state/used-$session_id" \
-      "$HOME/.claude/handoff-state/fired-$session_id" 2>/dev/null
+rm -f "$STATE_DIR/armed-$session_id" \
+      "$STATE_DIR/used-$session_id" \
+      "$STATE_DIR/fired-$session_id" 2>/dev/null
 
 exit 0

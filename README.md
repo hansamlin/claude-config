@@ -80,6 +80,7 @@ Claude Code 的 hook payload **不含任何 token 欄位**（只有 statusline �
 | `CC_HANDOFF_MIN_DELTA` | `20000` | 預測下一輪成長量的下限 |
 | `CC_HANDOFF_DISABLE` | — | 設 `1` 完全停用 |
 | `CC_HANDOFF_TRACE` | — | 設成檔案路徑，把收到的 hook payload 附加寫入，除錯用 |
+| `CC_HANDOFF_STATE_DIR` | `~/.claude/handoff-state` | 狀態目錄，測試用來隔離 |
 
 要永久改門檻就寫進 `settings.json` 的 `env` 區塊。想看一次完整流程：
 
@@ -88,6 +89,16 @@ CC_HANDOFF_THRESHOLD=5000 claude
 ```
 
 第一輪出現預警，第二輪結束時執行 handoff，第三輪之後只提醒不打斷。
+
+### 測試
+
+```bash
+bash ~/.claude/hooks/context-handoff-check.test.sh
+```
+
+22 個分支案例，涵蓋防迴圈、bg 排除、sidechain 過濾、arm 不打斷本輪、fire、不重複
+fire、PostCompact reset、停用開關與輸出合法性。全程在 `mktemp` 目錄裡用
+`CC_HANDOFF_STATE_DIR` 隔離，不會動到真實狀態。
 
 ### 已知限制
 

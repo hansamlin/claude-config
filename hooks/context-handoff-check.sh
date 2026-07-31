@@ -14,12 +14,14 @@
 #   CC_HANDOFF_THRESHOLD  觸發門檻（token），預設 300000
 #   CC_HANDOFF_MIN_DELTA  預測下一輪成長量的下限，預設 20000
 #   CC_HANDOFF_DISABLE    設為 1 完全停用
+#   CC_HANDOFF_STATE_DIR  狀態目錄，預設 ~/.claude/handoff-state（測試用來隔離）
+#   CC_HANDOFF_TRACE      設成檔案路徑則附加寫入收到的 payload，除錯用
 
 set -uo pipefail
 
 THRESHOLD="${CC_HANDOFF_THRESHOLD:-300000}"
 MIN_DELTA="${CC_HANDOFF_MIN_DELTA:-20000}"
-STATE_DIR="$HOME/.claude/handoff-state"
+STATE_DIR="${CC_HANDOFF_STATE_DIR:-$HOME/.claude/handoff-state}"
 
 [ "${CC_HANDOFF_DISABLE:-0}" = "1" ] && exit 0
 
