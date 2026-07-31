@@ -83,7 +83,8 @@ fire() {
       reason: (
         "【context 門檻自動交接】本 session 已用約 \($used) tokens，達到設定門檻 \($threshold)。\n"
         + "請立刻依序做完這三件事，然後停止，不要再繼續原本的工作：\n"
-        + "1. 用 Skill 工具呼叫 `handoff`，把目前任務進度與關鍵決策寫進專案記憶。\n"
+        + "1. 用 Skill 工具呼叫 handoff skill（可用技能清單裡是 `handoff` 或 "
+        + "`context-handoff:handoff`，兩者同一支），把目前進度與關鍵決策寫進專案記憶。\n"
         + "2. 用一段話告訴使用者：context 已達門檻、進度已寫入記憶、請開新 session 接續。\n"
         + "3. 結束回合。若使用者原本的任務尚未完成，交接內容要寫清楚下一步從哪裡接。"
       )

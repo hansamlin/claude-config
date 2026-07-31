@@ -1,12 +1,17 @@
 #!/usr/bin/env bash
-# 把這個 repo 的內容套用到 ~/.claude。
+# 把這個 repo 的設定套用到 ~/.claude。
 #
-# 設計成可重複執行（冪等）：settings.json 是「深度合併」而非覆蓋，
-# 只寫入本 repo 真正提供的那幾個 key，目標機器上其他設定原封不動。
+# 分工：
+#   plugin（context-handoff / tsgo-lsp）   由 Claude Code 的 marketplace 管，
+#                                          更新走 /plugin update，不經這支腳本
+#   CLAUDE.md / statusline.sh / settings   plugin 管不到，由這支腳本套用
+#
+# settings.json 是「深度合併」而非覆蓋，只寫入本 repo 提供的 key，
+# 目標機器上其他設定原封不動；可重複執行。
 #
 # 用法：
 #   ./install.sh              套用
-#   ./install.sh --dry-run    只顯示會做什麼，不動任何檔案
+#   ./install.sh --dry-run    只顯示會做什麼
 #
 # 環境變數：
 #   CLAUDE_DIR   目標目錄，預設 ~/.claude
@@ -38,10 +43,8 @@ if [ "$DRY_RUN" = 1 ]; then
     printf '（dry-run，不會寫入任何檔案）\n'
 fi
 
-step "建立目錄"
-run mkdir -p "$CLAUDE_DIR/hooks" "$CLAUDE_DIR/local-plugins"
-
-step "複製檔案"
+step "複製 plugin 管不到的檔案"
+run mkdir -p "$CLAUDE_DIR"
 for f in CLAUDE.md statusline.sh; do
     if [ -f "$CLAUDE_DIR/$f" ] && ! cmp -s "$REPO/$f" "$CLAUDE_DIR/$f"; then
         log "備份既有 $f → $f.bak"
@@ -50,30 +53,8 @@ for f in CLAUDE.md statusline.sh; do
     log "$f"
     run cp "$REPO/$f" "$CLAUDE_DIR/$f"
 done
-
-# 用 /. 複製目錄「內容」，既有檔案（例如 vendor/node_modules）保留不刪
-log "hooks/"
-run cp -R "$REPO/hooks/." "$CLAUDE_DIR/hooks/"
-log "local-plugins/"
-run cp -R "$REPO/local-plugins/." "$CLAUDE_DIR/local-plugins/"
-
 if [ "$DRY_RUN" = 0 ]; then
-    chmod +x "$CLAUDE_DIR/hooks/context-handoff-check.sh" \
-             "$CLAUDE_DIR/hooks/context-handoff-reset.sh" \
-             "$CLAUDE_DIR/hooks/context-handoff-check.test.sh" \
-             "$CLAUDE_DIR/statusline.sh"
-fi
-
-step "修正 tsgo-lsp 的絕對路徑"
-# plugin.json 的 lspServers.command 必須是絕對路徑，不吃 ~ 或環境變數，
-# 所以 repo 裡存的是 __CLAUDE_DIR__ 佔位符，安裝時填成目標機器的實際路徑。
-PLUGIN_JSON="$CLAUDE_DIR/local-plugins/plugins/tsgo-lsp/.claude-plugin/plugin.json"
-TSC_PATH="$CLAUDE_DIR/local-plugins/plugins/tsgo-lsp/vendor/node_modules/.bin/tsc"
-log "command → $TSC_PATH"
-if [ "$DRY_RUN" = 0 ]; then
-    tmp=$(mktemp)
-    jq --arg cmd "$TSC_PATH" '.lspServers.typescript.command = $cmd' "$PLUGIN_JSON" > "$tmp"
-    mv "$tmp" "$PLUGIN_JSON"
+    chmod +x "$CLAUDE_DIR/statusline.sh"
 fi
 
 step "合併 settings.json"
@@ -85,8 +66,8 @@ if [ -f "$SETTINGS" ]; then
         echo "既有 settings.json 不是合法 JSON，中止以免破壞它" >&2
         exit 1
     fi
-    # jq 的 * 對 object 是遞迴合併、對陣列是右側取代——正是要的行為：
-    # 目標機器其他設定保留，重複執行也不會讓 hooks 陣列愈疊愈長。
+    # jq 的 * 對 object 是遞迴合併、對陣列是右側取代：目標機器其他設定保留，
+    # 本 repo 提供的 key 以 repo 為準，重複執行結果穩定。
     merged=$(printf '%s' "$FRAGMENT" | jq -s '.[0] * .[1]' "$SETTINGS" -)
     if [ "$(printf '%s' "$merged" | jq -S .)" = "$(jq -S . "$SETTINGS")" ]; then
         log "已是最新，無需變更"
@@ -105,12 +86,39 @@ else
     fi
 fi
 
+step "安裝 plugin"
+# marketplace 已由上面的 settings.json 註冊，這裡只要 install。
+# 已安裝時 Claude Code 會自行略過，可重複執行。
+for p in context-handoff tsgo-lsp; do
+    log "$p@sam-tools"
+    if [ "$DRY_RUN" = 0 ]; then
+        claude plugin install "$p@sam-tools" 2>&1 | tail -1 | sed 's/^/    /' || true
+    fi
+done
+
+step "還原 tsgo-lsp 的 TypeScript"
+# vendor/node_modules 不進版控（約 30MB 二進位），從 lockfile 還原。
+# plugin 實際落地位置由 Claude Code 決定，所以用 find 定位。
+VENDOR=$(find "$CLAUDE_DIR/plugins" -type d -path '*tsgo-lsp/vendor' 2>/dev/null | head -1)
+if [ -z "$VENDOR" ]; then
+    VENDOR="$REPO/plugins/tsgo-lsp/vendor"
+fi
+log "vendor: $VENDOR"
+if [ "$DRY_RUN" = 0 ]; then
+    if [ -x "$VENDOR/node_modules/.bin/tsc" ]; then
+        log "已安裝，略過（要重裝就先刪掉 $VENDOR/node_modules）"
+    else
+        (cd "$VENDOR" && npm ci) || log "⚠ npm ci 失敗，請手動在上述目錄執行"
+    fi
+fi
+
 step "完成"
 cat <<EOF
-  還原 tsgo LSP 的 TypeScript（首次安裝或版本變更後需要）：
-    (cd "$CLAUDE_DIR/local-plugins/plugins/tsgo-lsp/vendor" && npm ci)
-
   驗證：
-    bash "$CLAUDE_DIR/hooks/context-handoff-check.test.sh"
+    bash "$REPO/plugins/context-handoff/scripts/check.test.sh"
     在 Claude Code 裡執行 /hooks 確認 Stop 與 PostCompact 有出現
+    ps aux | grep -- '--lsp'   確認 LSP 跑的是 tsgo
+
+  之後 repo 有更新時，plugin 部分用 /plugin marketplace update 即可，
+  只有 CLAUDE.md / statusline.sh / settings 變動才需要再跑這支腳本。
 EOF

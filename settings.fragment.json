@@ -1,42 +1,102 @@
 {
+  "$schema": "https://json.schemastore.org/claude-code-settings.json",
+  "env": {
+    "ENABLE_TOOL_SEARCH": "1",
+    "ENABLE_LSP_TOOL": "1",
+    "CLAUDE_CODE_MAX_SUBAGENT_SPAWN_DEPTH": "2",
+    "CLAUDE_CODE_MAX_CONCURRENT_SUBAGENTS": "20"
+  },
+  "attribution": {
+    "commit": "",
+    "pr": ""
+  },
+  "permissions": {
+    "allow": [
+      "Edit",
+      "Write",
+      "Bash(pnpx tsc:*)",
+      "Read(/__CLAUDE_DIR__/**)",
+      "Bash(pnpm run typecheck:*)",
+      "Bash(xargs sed:*)",
+      "Bash(find:*)",
+      "Bash(pnpm run:*)",
+      "Bash(sed:*)",
+      "mcp__chrome-devtools__list_pages",
+      "mcp__chrome-devtools__navigate_page",
+      "mcp__chrome-devtools__take_snapshot",
+      "mcp__chrome-devtools__take_screenshot",
+      "mcp__chrome-devtools__evaluate_script",
+      "mcp__chrome-devtools__list_console_messages",
+      "mcp__chrome-devtools__click",
+      "mcp__chrome-devtools__press_key",
+      "WebSearch",
+      "Bash(tee:*)",
+      "Bash(git fetch:*)",
+      "Bash(git worktree:*)",
+      "Bash(glab issue:*)",
+      "Bash(git commit:*)",
+      "Bash(glab mr*)"
+    ],
+    "deny": [],
+    "ask": [],
+    "defaultMode": "auto"
+  },
+  "worktree": {
+    "symlinkDirectories": [
+      "node_modules"
+    ],
+    "baseRef": "head"
+  },
+  "enableWorkflows": true,
   "statusLine": {
     "type": "command",
     "command": "bash __CLAUDE_DIR__/statusline.sh"
   },
-  "hooks": {
-    "Stop": [
-      {
-        "hooks": [
-          {
-            "type": "command",
-            "command": "bash __CLAUDE_DIR__/hooks/context-handoff-check.sh",
-            "timeout": 15
-          }
-        ]
-      }
-    ],
-    "PostCompact": [
-      {
-        "hooks": [
-          {
-            "type": "command",
-            "command": "bash __CLAUDE_DIR__/hooks/context-handoff-reset.sh",
-            "timeout": 10
-          }
-        ]
-      }
-    ]
+  "enabledPlugins": {
+    "code-simplifier@claude-plugins-official": true,
+    "figma@claude-plugins-official": true,
+    "document-skills@anthropic-agent-skills": true,
+    "code-review@claude-plugins-official": true,
+    "andrej-karpathy-skills@karpathy-skills": true,
+    "skill-creator@claude-plugins-official": true,
+    "context-handoff@sam-tools": true,
+    "tsgo-lsp@sam-tools": true
   },
   "extraKnownMarketplaces": {
-    "local-lsp": {
+    "karpathy-skills": {
       "source": {
-        "source": "directory",
-        "path": "__CLAUDE_DIR__/local-plugins"
+        "source": "github",
+        "repo": "forrestchang/andrej-karpathy-skills"
+      },
+      "autoUpdate": true
+    },
+    "claude-video": {
+      "source": {
+        "source": "github",
+        "repo": "bradautomates/claude-video"
+      }
+    },
+    "sam-tools": {
+      "source": {
+        "source": "github",
+        "repo": "hansamlin/claude-config"
       },
       "autoUpdate": true
     }
   },
-  "enabledPlugins": {
-    "tsgo-lsp@local-lsp": true
-  }
+  "language": "Chinese (Taiwan)",
+  "effortLevel": "high",
+  "advisorModel": "opus",
+  "showClearContextOnPlanAccept": true,
+  "autoUpdatesChannel": "latest",
+  "tui": "fullscreen",
+  "skipWorkflowUsageWarning": true,
+  "theme": "auto",
+  "editorMode": "normal",
+  "verbose": false,
+  "switchModelsOnFlag": false,
+  "autoScrollEnabled": true,
+  "agentPushNotifEnabled": true,
+  "skipAutoPermissionPrompt": true,
+  "voiceEnabled": false
 }

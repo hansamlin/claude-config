@@ -1,14 +1,15 @@
 {
   "name": "tsgo-lsp",
   "version": "1.0.0",
-  "description": "TypeScript 7 native (typescript@rc) LSP server",
+  "description": "TypeScript 7 native (tsgo) LSP server",
+  "author": {
+    "name": "Sam Lin",
+    "email": "sam82520@gmail.com"
+  },
   "lspServers": {
     "typescript": {
-      "command": "__CLAUDE_DIR__/local-plugins/plugins/tsgo-lsp/vendor/node_modules/.bin/tsc",
-      "args": [
-        "--lsp",
-        "--stdio"
-      ],
+      "command": "${CLAUDE_PLUGIN_ROOT}/vendor/node_modules/.bin/tsc",
+      "args": ["--lsp", "--stdio"],
       "extensionToLanguage": {
         ".ts": "typescript",
         ".tsx": "typescriptreact",

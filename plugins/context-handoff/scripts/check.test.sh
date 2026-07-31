@@ -1,14 +1,14 @@
 #!/usr/bin/env bash
-# context-handoff-check.sh / context-handoff-reset.sh 的分支驗證。
+# check.sh / reset.sh 的分支驗證。
 #
 # 全程在 mktemp 目錄裡跑，用 CC_HANDOFF_STATE_DIR 隔離，不會碰到
 # ~/.claude/handoff-state 的真實狀態。直接執行即可：
-#   bash ~/.claude/hooks/context-handoff-check.test.sh
+#   bash plugins/context-handoff/scripts/check.test.sh
 set -uo pipefail
 
 HERE=$(cd "$(dirname "${BASH_SOURCE[0]}")" && pwd)
-HOOK="$HERE/context-handoff-check.sh"
-RESET="$HERE/context-handoff-reset.sh"
+HOOK="$HERE/check.sh"
+RESET="$HERE/reset.sh"
 
 TMP=$(mktemp -d)
 export CC_HANDOFF_STATE_DIR="$TMP/state"
