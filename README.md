@@ -124,7 +124,7 @@ hook 與 skill 放在同一個 plugin 裡是必要的：hook 觸發時會叫 Cla
 
 - payload 帶 `agent_id` 直接退出——subagent 送出的 prompt 也會觸發這個事件，但它的 context 與主 session 無關。**只認 `agent_id` 不認 `agent_type`**：文件寫 `agent_id`「present only when the hook fires inside a subagent call」，而 `claude --agent foo` 啟動的**主** session 帶的是 `agent_type`，連它一起擋會讓那種 session 永遠不交接——正是 bg 排除那個 bug 的翻版
 - transcript 過濾 `isSidechain != true`——不過濾的話，只要派過一次 subagent，最後一筆就是 subagent 的小 context，門檻永遠到不了且**完全靜默**
-- 用量從最後一個 compact 邊界（頂層 `isCompactSummary == true`）之後重算——見下節
+- 用量從最後一個 compact 邊界（頂層 `isCompactSummary == true`）之後重算——見上面〈compact 邊界必須尊重〉
 
 ### 設定
 
