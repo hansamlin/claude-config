@@ -15,6 +15,8 @@
 #
 # 可調環境變數：
 #   CC_HANDOFF_THRESHOLD  觸發門檻（token），預設 300000
+#   CC_HANDOFF_MAX_NAGS   最多主動要求交接幾次，預設 3
+#   CC_HANDOFF_LOOKBACK   往回掃幾筆 transcript 找 handoff 執行記錄，預設 300
 #   CC_HANDOFF_DISABLE    設為 1 完全停用
 #   CC_HANDOFF_STATE_DIR  狀態目錄，預設 ~/.claude/handoff-state（測試用來隔離）
 #   CC_HANDOFF_TRACE      設成檔案路徑則附加寫入收到的 payload，除錯用
@@ -22,6 +24,8 @@
 set -uo pipefail
 
 THRESHOLD="${CC_HANDOFF_THRESHOLD:-300000}"
+MAX_NAGS="${CC_HANDOFF_MAX_NAGS:-3}"
+LOOKBACK="${CC_HANDOFF_LOOKBACK:-300}"
 STATE_DIR="${CC_HANDOFF_STATE_DIR:-$HOME/.claude/handoff-state}"
 
 [ "${CC_HANDOFF_DISABLE:-0}" = "1" ] && exit 0
@@ -30,9 +34,11 @@ input=$(cat)
 [ -n "${CC_HANDOFF_TRACE:-}" ] && printf '%s\n' "$input" >> "$CC_HANDOFF_TRACE"
 jq_in() { printf '%s' "$input" | jq -r "$1" 2>/dev/null; }
 
-# subagent 也會收到 UserPromptSubmit（payload 帶 agent_id），
-# 但它的 context 與主 session 無關，交接由主 agent 接手後才有意義。
-[ -n "$(jq_in '.agent_id // ""')" ] && exit 0
+# subagent 也會收到 UserPromptSubmit，但它的 context 與主 session 無關，
+# 交接要等主 agent 接手才有意義。agent_id / agent_type 兩個都認：文件說
+# subagent 的 payload 會帶這兩個欄位，只認一個的話萬一另一個才是實際帶的，
+# 就會在 subagent 裡誤觸發、把主 session 的交接額度用掉且完全靜默。
+[ -n "$(jq_in '.agent_id // ""')$(jq_in '.agent_type // ""')" ] && exit 0
 
 transcript=$(jq_in '.transcript_path // ""')
 session_id=$(jq_in '.session_id // ""')
@@ -56,21 +62,41 @@ esac
 
 [ "$used" -lt "$THRESHOLD" ] && exit 0
 
+# handoff 到底跑了沒，以 transcript 為準而不是「我催過了」為準。
+# additionalContext 只是注入指示，沒有任何機制保證 Claude 一定照做；
+# 催一次就記帳收手的話，模型忽略一次就等於這個 session 再也不會交接。
+# 只看尾端一段：compact 之後 context 會塌回去，先前那次 handoff 早就過期，
+# 掃全檔會讓舊記錄永遠壓住後續的觸發。
+if tail -n "$LOOKBACK" "$transcript" 2>/dev/null | jq -r '
+    select(.type == "assistant" and (.isSidechain != true))
+    | .message.content[]?
+    | select(.type == "tool_use" and .name == "Skill")
+    | .input.skill // ""
+' 2>/dev/null | grep -q 'handoff'; then
+    jq -n --argjson used "$used" '
+    { systemMessage: "⚠️ 已交接過，context 目前約 \($used) tokens，建議盡快開新 session。" }'
+    exit 0
+fi
+
 mkdir -p "$STATE_DIR" 2>/dev/null || exit 0
-fired="$STATE_DIR/fired-$session_id"
+nags="$STATE_DIR/nags-$session_id"
 
 # 順手清掉 7 天前的殘留狀態檔
 find "$STATE_DIR" -maxdepth 1 -type f -mtime +7 -delete 2>/dev/null
 
-# 一個 session 只強制交接一次。使用者選擇繼續用就尊重他，
-# 之後只給不阻斷的提醒，否則每次送出訊息都被攔會沒辦法工作。
-if [ -f "$fired" ]; then
+count=$(cat "$nags" 2>/dev/null)
+case "$count" in
+    '' | *[!0-9]*) count=0 ;;
+esac
+
+# 催過上限次數還是沒交接，就當使用者是刻意要繼續用，只留不打斷的提醒。
+if [ "$count" -ge "$MAX_NAGS" ]; then
     jq -n --argjson used "$used" '
     { systemMessage: "⚠️ context 已達交接門檻（目前約 \($used) tokens），建議盡快開新 session。" }'
     exit 0
 fi
 
-: > "$fired"
+printf '%s' "$((count + 1))" > "$nags" 2>/dev/null
 
 # 用 additionalContext 而非 decision:"block"：block 會讓這次 prompt 直接作廢，
 # Claude 沒有 turn 可以執行 handoff skill，就只剩一句提醒而沒有真的交接。

@@ -87,7 +87,10 @@ Claude Code 的 hook payload **不含任何 token 欄位**（只有 statusline �
 
 1. 當下用量 < 門檻 → 靜默放行
 2. 當下用量 ≥ 門檻 → 注入 `additionalContext`，要 Claude 先跑 `handoff` skill 把進度寫進記憶、告訴你換 session，並**不要動你這則訊息交派的工作**；同時用 `systemMessage` 讓你也看到
-3. 同一個 session 觸發過一次後降級為不阻斷的提醒——你選擇繼續用就尊重你，否則每次送訊息都被攔會沒辦法工作
+3. transcript 尾端查得到 `handoff` skill 真的被呼叫過 → 收手，只留一行提醒
+4. 催了 `CC_HANDOFF_MAX_NAGS` 次仍沒交接 → 當你是刻意要繼續用，降級為不打斷的提醒
+
+第 3 點的判準是「transcript 說 handoff 跑過了」而不是「我催過了」。`additionalContext` 只是注入指示，沒有任何機制保證 Claude 一定照做；催一次就記帳收手的話，模型忽略一次，這個 session 就再也不會交接，而且完全靜默。掃描只看尾端 `CC_HANDOFF_LOOKBACK` 筆——compact 之後 context 會塌回去，先前那次 handoff 早就過期，掃全檔會讓舊記錄永遠壓住後續觸發。sidechain 裡的 handoff 不算數，那是 subagent 的事。
 
 hook 與 skill 放在同一個 plugin 裡是必要的：hook 觸發時會叫 Claude 執行 `handoff`，兩者分開的話，裝了 hook 卻沒有 skill 就會指向一個不存在的東西。
 
@@ -109,7 +112,7 @@ hook 與 skill 放在同一個 plugin 裡是必要的：hook 觸發時會叫 Cla
 
 ### 幾個必要的防呆
 
-- payload 帶 `agent_id` 直接退出——subagent 送出的 prompt 也會觸發這個事件，但它的 context 與主 session 無關
+- payload 帶 `agent_id` **或** `agent_type` 直接退出——subagent 送出的 prompt 也會觸發這個事件，但它的 context 與主 session 無關。兩個欄位都認：只認一個的話，萬一實際帶的是另一個，就會在 subagent 裡誤觸發、把主 session 的催告額度用掉且完全靜默
 - transcript 過濾 `isSidechain != true`——不過濾的話，只要派過一次 subagent，最後一筆就是 subagent 的小 context，門檻永遠到不了且**完全靜默**
 
 ### 設定
@@ -117,6 +120,8 @@ hook 與 skill 放在同一個 plugin 裡是必要的：hook 觸發時會叫 Cla
 | 環境變數 | 預設 | 說明 |
 | --- | --- | --- |
 | `CC_HANDOFF_THRESHOLD` | `300000` | 觸發門檻（token）。1M context window 的 30% |
+| `CC_HANDOFF_MAX_NAGS` | `3` | 最多主動要求交接幾次，超過就只提醒 |
+| `CC_HANDOFF_LOOKBACK` | `300` | 往回掃幾筆 transcript 找 handoff 執行記錄 |
 | `CC_HANDOFF_DISABLE` | — | 設 `1` 完全停用 |
 | `CC_HANDOFF_TRACE` | — | 設成檔案路徑，把收到的 hook payload 附加寫入，除錯用 |
 | `CC_HANDOFF_STATE_DIR` | `~/.claude/handoff-state` | 狀態目錄，測試用來隔離 |
@@ -127,7 +132,15 @@ hook 與 skill 放在同一個 plugin 裡是必要的：hook 觸發時會叫 Cla
 CC_HANDOFF_THRESHOLD=5000 claude
 ```
 
-第一次送出訊息就會轉去做 handoff，之後只提醒不打斷。
+第一次送出訊息就會轉去做 handoff，跑完之後只提醒不打斷。
+
+想確認 hook 真的有被觸發（而不是註冊了卻靜默），加上 trace：
+
+```bash
+CC_HANDOFF_THRESHOLD=5000 CC_HANDOFF_TRACE=/tmp/upst.jsonl claude
+```
+
+`/tmp/upst.jsonl` 有 payload 但沒交接＝指示沒被照做；檔案空的＝hook 根本沒註冊到。
 
 ### 測試
 
@@ -135,12 +148,12 @@ CC_HANDOFF_THRESHOLD=5000 claude
 bash plugins/context-handoff/scripts/check.test.sh
 ```
 
-20 個分支案例，涵蓋 subagent 排除、sidechain 過濾、未達門檻靜默、達門檻注入指示、不重複觸發、bg session 必須觸發的回歸、PostCompact reset、停用開關與輸出合法性。全程在 `mktemp` 目錄裡用 `CC_HANDOFF_STATE_DIR` 隔離，不會動到真實狀態。
+12 組案例、29 條斷言，涵蓋 subagent 排除（`agent_id` / `agent_type` 兩種）、sidechain 過濾、未達門檻靜默、達門檻注入指示、模型忽略時繼續催、催滿上限降級、handoff 跑過就收手、bg session 必須觸發的回歸、PostCompact reset、停用開關與輸出合法性。全程在 `mktemp` 目錄裡用 `CC_HANDOFF_STATE_DIR` 隔離，不會動到真實狀態。
 
 ### 已知限制
 
 - **讀到的是上一輪的數字**：hook 觸發時最新的 usage 就是上一輪 assistant 訊息，也就是你送出訊息當下的實際 context 大小——這正是要比的量，但你這則訊息本身的 token 不算在內。在 1M window 用 30 萬當門檻餘裕充足。
-- **注入的是指示不是強制**：`additionalContext` 讓 Claude 看到並據此行動，但沒有機制能保證它一定照做。Hook 無法直接呼叫工具或 skill，這是 hooks 的設計邊界。
+- **注入的是指示不是強制**：`additionalContext` 讓 Claude 看到並據此行動，但沒有機制能保證它一定照做。Hook 無法直接呼叫工具或 skill，這是 hooks 的設計邊界。所以才用「transcript 查得到 handoff 執行記錄」當收手條件，而不是「我催過了」。
 - `trigger: "auto"`（自動壓縮）未實測，只驗過 `manual`。reset script 不讀 `trigger` 欄位，行為應該一致。
 
 ## tsgo-lsp
