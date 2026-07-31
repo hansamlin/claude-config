@@ -1,0 +1,8 @@
+{
+  "name": "tsgo-lsp-vendor",
+  "private": true,
+  "version": "1.0.0",
+  "dependencies": {
+    "typescript": "^7.0.2"
+  }
+}

@@ -1,0 +1,6 @@
+{
+  "name": "local-lsp",
+  "description": "Local LSP plugins (user scope)",
+  "owner": { "name": "sam_lin", "email": "sam82520@gmail.com" },
+  "plugins": [{ "name": "tsgo-lsp", "source": "./plugins/tsgo-lsp" }]
+}
