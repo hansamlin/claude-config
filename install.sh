@@ -87,16 +87,28 @@ else
 fi
 
 step "安裝 plugin"
-# marketplace 已由上面的 settings.json 註冊，這裡只要 install。
-# 已安裝時 Claude Code 會自行略過，可重複執行。
-for p in context-handoff tsgo-lsp; do
-    log "$p@sam-tools"
-    if [ "$DRY_RUN" = 0 ]; then
-        claude plugin install "$p@sam-tools" 2>&1 | tail -1 | sed 's/^/    /' || true
-    fi
-done
+# settings.json 的 enabledPlugins 只是「啟用」旗標，不會讓 plugin 真的落地——
+# 沒跑過 install 的話 installed_plugins.json 是空的，hook 完全不會觸發且毫無錯誤訊息。
+# 所以這裡逐一安裝 fragment 裡列出的每一個，而不是只裝本 repo 自己的兩個。
+# 已安裝的 Claude Code 會自行略過，可重複執行。
+if [ "$CLAUDE_DIR" != "$HOME/.claude" ]; then
+    log "CLAUDE_DIR 非預設，略過──claude plugin 一律操作真實 ~/.claude，不吃這個變數"
+else
+    while IFS= read -r p; do
+        [ -n "$p" ] || continue
+        log "$p"
+        if [ "$DRY_RUN" = 0 ]; then
+            claude plugin install "$p" 2>&1 | tail -1 | sed 's/^/    /' || true
+        fi
+    done < <(jq -r '.enabledPlugins // {} | keys[]' "$REPO/settings.fragment.json")
+fi
 
 step "還原 tsgo-lsp 的 TypeScript"
+if [ "$CLAUDE_DIR" != "$HOME/.claude" ]; then
+    log "CLAUDE_DIR 非預設，略過（plugin 不在此目錄底下）"
+    printf '\n▸ 完成（部分步驟因 CLAUDE_DIR 非預設而略過）\n'
+    exit 0
+fi
 # vendor/node_modules 不進版控（約 30MB 二進位），從 lockfile 還原。
 # plugin 實際落地位置由 Claude Code 決定，所以用 find 定位。
 # 可能同時存在 marketplaces/ 與 cache/ 兩份，逐一處理而非只取第一個

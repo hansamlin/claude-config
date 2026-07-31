@@ -58,7 +58,6 @@
     "document-skills@anthropic-agent-skills": true,
     "code-review@claude-plugins-official": true,
     "andrej-karpathy-skills@karpathy-skills": true,
-    "tsgo-lsp@local-lsp": true,
     "skill-creator@claude-plugins-official": true,
     "context-handoff@sam-tools": true,
     "tsgo-lsp@sam-tools": true
@@ -68,13 +67,6 @@
       "source": {
         "source": "github",
         "repo": "forrestchang/andrej-karpathy-skills"
-      },
-      "autoUpdate": true
-    },
-    "local-lsp": {
-      "source": {
-        "source": "directory",
-        "path": "__CLAUDE_DIR__/local-plugins"
       },
       "autoUpdate": true
     },
@@ -88,7 +80,8 @@
       "source": {
         "source": "github",
         "repo": "hansamlin/claude-config"
-      }
+      },
+      "autoUpdate": true
     }
   },
   "language": "Chinese (Taiwan)",

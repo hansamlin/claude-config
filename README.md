@@ -69,6 +69,12 @@ repo 不收 `settings.json` 本體（它會被 Claude Code 執行期改寫，`/c
 
 fragment 裡的路徑寫成 `__CLAUDE_DIR__` 佔位符，安裝時填成實際路徑，`pull.sh` 再正規化回去，個人路徑不會進版控。
 
+合併是**只加不減**：從 fragment 拿掉一個 key，不會讓目標機器上那個 key 消失。要真正移除某項設定，得在本機刪掉再 `./pull.sh` 同步回來。
+
+`install.sh` 會逐一安裝 fragment `enabledPlugins` 裡列出的**每一個** plugin，不只本 repo 的兩個——`enabledPlugins` 只是啟用旗標，沒真的 install 過的話 plugin 不會落地，hook 不觸發而且毫無錯誤訊息。
+
+`CLAUDE_DIR` 只對檔案複製與 settings 合併有效。`claude plugin install` 一律操作真實 `~/.claude`，所以 `CLAUDE_DIR` 指到別處時那兩步會被略過——那個變數是給測試用的，不是完整的沙箱。
+
 ## context 門檻自動 handoff
 
 長 session 的 context 會無聲無息地漲，等到發現時往往已經來不及好好交接。這個 plugin 讓它在固定門檻自動停下來、把進度寫進記憶、提醒你換 session。
