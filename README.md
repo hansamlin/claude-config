@@ -27,6 +27,15 @@
 
 新增要版控的檔案時，記得在 `.gitignore` 補一條 `!` 規則，否則會被靜默忽略。
 
+> **⚠️ 絕對不要在 `~/.claude` 執行 `git clean -fdx`**
+>
+> 白名單模式下，除了上表那幾個檔案以外的東西——包含 `projects/` 全部的對話
+> transcript、`history.jsonl`、`plugins/`——在 git 眼中都是「被忽略的檔案」。
+> `-x` 會連同被忽略的檔案一起刪除，等於一次清空整個 Claude Code 的資料目錄，
+> 而且這些內容不在版控裡，救不回來。
+>
+> 同理，`git stash -u` / `git stash -a` 在這裡也要小心。
+
 ## 新機器安裝
 
 ```bash
