@@ -1,80 +1,61 @@
 # claude-config
 
-`~/.claude` 的 user scope 設定版控。只收「換機器時想還原的東西」，不收任何執行期產物。
+Claude Code 的 user scope 設定版控。repo 放在 `~/project/claude-config`，用 `install.sh` 單向套用到 `~/.claude`。
+
+## 為什麼不直接把 repo 開在 `~/.claude`
+
+試過，然後放棄了——`~/.claude` 同時是 Claude Code 的執行目錄，把 repo 疊上去有兩個治不好的問題：
+
+- **`git clean -fdx` 會清空整個資料目錄。** 白名單式 `.gitignore` 下，`projects/`（500MB 以上的對話 transcript）、`history.jsonl` 在 git 眼中全是「被忽略的檔案」，`-x` 會連它們一起刪，而且不在版控裡救不回來。
+- **`settings.json` 會被執行期改寫。** `/config` 調整、`feedbackSurveyState.lastShownTime` 之類會直接寫回檔案，工作區永遠是髒的，`git checkout` 還會悄悄回捲當下生效的設定。
+
+分開放之後這兩個風險都不存在：`~/.claude` 就是單純的執行目錄，repo 是乾淨的來源。
+
+## 用法
+
+```bash
+./install.sh              # repo → ~/.claude
+./install.sh --dry-run    # 只看會做什麼
+
+./pull.sh                 # ~/.claude → repo（把本機改動抓回來）
+./pull.sh --dry-run       # 只列出有差異的檔案
+```
+
+兩支互為反向，都可重複執行。`CLAUDE_DIR` 環境變數可指定目標目錄（預設 `~/.claude`），測試用。
+
+需要 `jq`。
+
+首次安裝後要還原 tsgo LSP 的 TypeScript：
+
+```bash
+(cd ~/.claude/local-plugins/plugins/tsgo-lsp/vendor && npm ci)
+```
 
 ## 收了什麼
 
 | 路徑 | 用途 |
 | --- | --- |
 | `CLAUDE.md` | user scope 全域指示（sub agent 派工原則、模型路由、git 環境前提） |
-| `settings.json` | 權限、env、hooks、statusline、啟用的 plugin 與 marketplace |
 | `statusline.sh` | 狀態列：路徑 / 分支 / 模型 / context 用量 / 5 小時額度 |
 | `hooks/context-handoff-check.sh` | context 達門檻時自動觸發 handoff（見下） |
 | `hooks/context-handoff-reset.sh` | 壓縮後清掉上面那支的狀態 |
+| `hooks/context-handoff-check.test.sh` | 22 案分支測試 |
+| `settings.fragment.json` | 上述功能在 `settings.json` 裡需要的那幾個 key |
 | `local-plugins/` | 自製 tsgo LSP plugin（TypeScript 7 native），只收設定與 lockfile |
 
-## 沒收什麼，為什麼
+`skills/` 刻意不收，內含公司專案相關內容。
 
-`.gitignore` 採「先擋全部（`*`），再逐項 `!` 放行」。這樣 Claude Code 日後在 `~/.claude` 新增的任何檔案預設都不會被 commit——這個目錄同時是執行目錄，放任 `git add -A` 遲早會把對話記錄帶上去。
+**這個 repo 只適合維持 private**：`CLAUDE.md` 帶有公司脈絡（GitLab / `glab` 工作流程），要轉 public 前必須重新逐檔稽核。另外 `CLAUDE.md` 提到的 `git-remote-troubleshoot` skill 屬於未收錄的 `skills/`，新機器上會是個指不到東西的引用。
 
-明確排除的大宗：
+## `settings.json` 是合併不是覆蓋
 
-- `projects/` — 所有專案的對話 transcript 與 memory，500MB 以上
-- `history.jsonl`、`file-history/`、`shell-snapshots/` — 執行歷史
-- `plugins/` — 從 marketplace 安裝的，重裝即可
-- `jobs/`、`sessions/`、`daemon.log`、各種 `*cache*` — 執行期狀態
-- `skills/` — 刻意不收，內含公司專案相關內容
+repo **不收** `settings.json` 本體，只收 `settings.fragment.json`——裡面僅有本 repo 真正提供的那幾個 key（`statusLine`、`hooks.Stop`、`hooks.PostCompact`、tsgo-lsp 的 marketplace 與啟用旗標）。
 
-**這個 repo 只適合維持 private**：`skills/` 雖然排除了，但 `CLAUDE.md` 本身也帶有公司脈絡（GitLab / `glab` 工作流程），`settings.json` 則記錄了本機的 plugin 與 marketplace 組態。要轉 public 之前必須重新逐檔稽核一次。
+`install.sh` 用 `jq` 的 `*` 運算子深度合併進目標機器現有的 `settings.json`：對 object 是遞迴合併，所以你的 `permissions`、`env`、`theme`、其他 hook 全部保留；對陣列是右側取代，所以重複執行不會讓 `hooks.Stop` 愈疊愈長。寫入前會備份成 `settings.json.bak`，內容無變化時完全不動檔案。
 
-新增要版控的檔案時，記得在 `.gitignore` 補一條 `!` 規則，否則會被靜默忽略。
+fragment 裡的路徑寫成 `__CLAUDE_DIR__` 佔位符，安裝時填成目標機器的實際絕對路徑。同理 `plugin.json` 的 `lspServers.command`——它必須是絕對路徑，不吃 `~` 或環境變數，所以 repo 存佔位符、`install.sh` 填實際值、`pull.sh` 再正規化回去，個人路徑不會進版控。
 
-> **⚠️ 絕對不要在 `~/.claude` 執行 `git clean -fdx`**
->
-> 白名單模式下，除了上表那幾個檔案以外的東西——包含 `projects/` 全部的對話
-> transcript、`history.jsonl`、`plugins/`——在 git 眼中都是「被忽略的檔案」。
-> `-x` 會連同被忽略的檔案一起刪除，等於一次清空整個 Claude Code 的資料目錄，
-> 而且這些內容不在版控裡，救不回來。
->
-> 同理，`git stash -u` / `git stash -a` 在這裡也要小心。
-
-> **⚠️ `settings.json` 會被 Claude Code 在執行期改寫**
->
-> `/config` 調整、`feedbackSurveyState.lastShownTime` 之類的欄位都會直接寫回檔案，
-> 所以這個 repo 的工作區「本來就會是髒的」，不代表你動過它。也因此
-> `git checkout settings.json` 會把當下真實生效的設定悄悄回捲——要還原前先看清楚
-> `git diff` 是什麼。
-
-## 新機器安裝
-
-```bash
-git clone <this-repo> ~/.claude-config
-cd ~/.claude-config
-
-mkdir -p ~/.claude/hooks ~/.claude/local-plugins
-
-# 目錄用 /. 複製「內容」，語意最明確
-cp -R hooks/. ~/.claude/hooks/
-cp -R local-plugins/. ~/.claude/local-plugins/
-cp CLAUDE.md statusline.sh ~/.claude/
-chmod +x ~/.claude/hooks/*.sh ~/.claude/statusline.sh
-
-# 還原 tsgo LSP 的 TypeScript（版本由 package-lock.json 鎖定在 7.0.2）
-(cd ~/.claude/local-plugins/plugins/tsgo-lsp/vendor && npm ci)
-```
-
-`settings.json` **不要直接覆蓋**——目標機器可能已有你要保留的設定。先比對再決定：
-
-```bash
-diff ~/.claude/settings.json settings.json   # 確認差異後再 cp
-```
-
-兩個換機器一定要處理的地方：
-
-- `local-plugins/plugins/tsgo-lsp/.claude-plugin/plugin.json` 的 `command` 是硬編碼絕對路徑（`/Users/sam_lin/.claude/...`），換使用者或換機器要改。
-- `CLAUDE.md` 提到的 `git-remote-troubleshoot` skill 屬於 `skills/`，**這個 repo 沒有收**，新機器上會是個指不到東西的引用。
-
-裝完在 Claude Code 裡用 `/hooks` 確認兩個 hook 有出現，`ps aux | grep -- '--lsp'` 確認 LSP 跑的是這份 tsc，並執行一次 `bash ~/.claude/hooks/context-handoff-check.test.sh` 確認 22 案全過。
+如果你在 `~/.claude/settings.json` 裡改了 hooks / statusLine / 這個 marketplace 的設定，`pull.sh` **不會**幫你抓回來，要手動反映到 fragment。
 
 ## context 門檻自動 handoff
 
@@ -124,12 +105,10 @@ CC_HANDOFF_THRESHOLD=5000 claude
 ### 測試
 
 ```bash
-bash ~/.claude/hooks/context-handoff-check.test.sh
+bash hooks/context-handoff-check.test.sh
 ```
 
-22 個分支案例，涵蓋防迴圈、bg 排除、sidechain 過濾、arm 不打斷本輪、fire、不重複
-fire、PostCompact reset、停用開關與輸出合法性。全程在 `mktemp` 目錄裡用
-`CC_HANDOFF_STATE_DIR` 隔離，不會動到真實狀態。
+22 個分支案例，涵蓋防迴圈、bg 排除、sidechain 過濾、arm 不打斷本輪、fire、不重複 fire、PostCompact reset、停用開關與輸出合法性。全程在 `mktemp` 目錄裡用 `CC_HANDOFF_STATE_DIR` 隔離，不會動到真實狀態。
 
 ### 已知限制
 

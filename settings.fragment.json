@@ -1,0 +1,42 @@
+{
+  "statusLine": {
+    "type": "command",
+    "command": "bash __CLAUDE_DIR__/statusline.sh"
+  },
+  "hooks": {
+    "Stop": [
+      {
+        "hooks": [
+          {
+            "type": "command",
+            "command": "bash __CLAUDE_DIR__/hooks/context-handoff-check.sh",
+            "timeout": 15
+          }
+        ]
+      }
+    ],
+    "PostCompact": [
+      {
+        "hooks": [
+          {
+            "type": "command",
+            "command": "bash __CLAUDE_DIR__/hooks/context-handoff-reset.sh",
+            "timeout": 10
+          }
+        ]
+      }
+    ]
+  },
+  "extraKnownMarketplaces": {
+    "local-lsp": {
+      "source": {
+        "source": "directory",
+        "path": "__CLAUDE_DIR__/local-plugins"
+      },
+      "autoUpdate": true
+    }
+  },
+  "enabledPlugins": {
+    "tsgo-lsp@local-lsp": true
+  }
+}

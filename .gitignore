@@ -1,33 +1,7 @@
-# ~/.claude 是 Claude Code 的執行目錄，裡面絕大多數內容是對話 transcript、
-# 快取與執行期狀態，全都不該進版控（projects/ 一項就 500MB 以上）。
-#
-# 因此採「先擋全部，再逐項放行」：任何未明確列出的檔案都不會被 commit，
-# 包含 Claude Code 日後自己新增的東西。新增要收的檔案時，記得補一條 ! 規則。
+# tsgo-lsp 的 TypeScript 二進位（約 30MB），靠 vendor/package-lock.json + npm ci 還原
+node_modules/
 
-*
+# install.sh 產生的備份
+*.bak
 
-# --- 版控自身 ---
-!.gitignore
-!README.md
-
-# --- user scope 設定 ---
-!CLAUDE.md
-!settings.json
-!statusline.sh
-
-# --- context 門檻自動 handoff（Stop / PostCompact hook）---
-!hooks/
-!hooks/*.sh
-
-# --- 自製 tsgo LSP plugin（TypeScript 7 native）---
-# 只收設定與 lockfile，vendor/node_modules 的二進位（約 30MB）靠 npm ci 還原
-!local-plugins/
-!local-plugins/.claude-plugin/
-!local-plugins/.claude-plugin/*.json
-!local-plugins/plugins/
-!local-plugins/plugins/*/
-!local-plugins/plugins/*/.claude-plugin/
-!local-plugins/plugins/*/.claude-plugin/*.json
-!local-plugins/plugins/*/vendor/
-!local-plugins/plugins/*/vendor/package.json
-!local-plugins/plugins/*/vendor/package-lock.json
+.DS_Store

@@ -4,8 +4,11 @@
   "description": "TypeScript 7 native (typescript@rc) LSP server",
   "lspServers": {
     "typescript": {
-      "command": "/Users/sam_lin/.claude/local-plugins/plugins/tsgo-lsp/vendor/node_modules/.bin/tsc",
-      "args": ["--lsp", "--stdio"],
+      "command": "__CLAUDE_DIR__/local-plugins/plugins/tsgo-lsp/vendor/node_modules/.bin/tsc",
+      "args": [
+        "--lsp",
+        "--stdio"
+      ],
       "extensionToLanguage": {
         ".ts": "typescript",
         ".tsx": "typescriptreact",
