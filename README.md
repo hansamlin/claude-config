@@ -25,6 +25,8 @@
 - `jobs/`、`sessions/`、`daemon.log`、各種 `*cache*` — 執行期狀態
 - `skills/` — 刻意不收，內含公司專案相關內容
 
+**這個 repo 只適合維持 private**：`skills/` 雖然排除了，但 `CLAUDE.md` 本身也帶有公司脈絡（GitLab / `glab` 工作流程），`settings.json` 則記錄了本機的 plugin 與 marketplace 組態。要轉 public 之前必須重新逐檔稽核一次。
+
 新增要版控的檔案時，記得在 `.gitignore` 補一條 `!` 規則，否則會被靜默忽略。
 
 > **⚠️ 絕對不要在 `~/.claude` 執行 `git clean -fdx`**
@@ -36,23 +38,43 @@
 >
 > 同理，`git stash -u` / `git stash -a` 在這裡也要小心。
 
+> **⚠️ `settings.json` 會被 Claude Code 在執行期改寫**
+>
+> `/config` 調整、`feedbackSurveyState.lastShownTime` 之類的欄位都會直接寫回檔案，
+> 所以這個 repo 的工作區「本來就會是髒的」，不代表你動過它。也因此
+> `git checkout settings.json` 會把當下真實生效的設定悄悄回捲——要還原前先看清楚
+> `git diff` 是什麼。
+
 ## 新機器安裝
 
 ```bash
 git clone <this-repo> ~/.claude-config
 cd ~/.claude-config
 
-# 若 ~/.claude 尚不存在，直接搬過去；已存在則逐檔複製，注意不要蓋掉現有設定
-cp -r CLAUDE.md settings.json statusline.sh hooks local-plugins ~/.claude/
+mkdir -p ~/.claude/hooks ~/.claude/local-plugins
+
+# 目錄用 /. 複製「內容」，語意最明確
+cp -R hooks/. ~/.claude/hooks/
+cp -R local-plugins/. ~/.claude/local-plugins/
+cp CLAUDE.md statusline.sh ~/.claude/
 chmod +x ~/.claude/hooks/*.sh ~/.claude/statusline.sh
 
 # 還原 tsgo LSP 的 TypeScript（版本由 package-lock.json 鎖定在 7.0.2）
-cd ~/.claude/local-plugins/plugins/tsgo-lsp/vendor && npm ci
+(cd ~/.claude/local-plugins/plugins/tsgo-lsp/vendor && npm ci)
 ```
 
-**注意**：`local-plugins/plugins/tsgo-lsp/.claude-plugin/plugin.json` 裡的 `command` 是硬編碼絕對路徑（`/Users/sam_lin/.claude/...`），換使用者或換機器要改成對應路徑。
+`settings.json` **不要直接覆蓋**——目標機器可能已有你要保留的設定。先比對再決定：
 
-裝完在 Claude Code 裡用 `/hooks` 確認兩個 hook 有出現，`ps aux | grep -- '--lsp'` 確認 LSP 跑的是這份 tsc。
+```bash
+diff ~/.claude/settings.json settings.json   # 確認差異後再 cp
+```
+
+兩個換機器一定要處理的地方：
+
+- `local-plugins/plugins/tsgo-lsp/.claude-plugin/plugin.json` 的 `command` 是硬編碼絕對路徑（`/Users/sam_lin/.claude/...`），換使用者或換機器要改。
+- `CLAUDE.md` 提到的 `git-remote-troubleshoot` skill 屬於 `skills/`，**這個 repo 沒有收**，新機器上會是個指不到東西的引用。
+
+裝完在 Claude Code 裡用 `/hooks` 確認兩個 hook 有出現，`ps aux | grep -- '--lsp'` 確認 LSP 跑的是這份 tsc，並執行一次 `bash ~/.claude/hooks/context-handoff-check.test.sh` 確認 22 案全過。
 
 ## context 門檻自動 handoff
 
