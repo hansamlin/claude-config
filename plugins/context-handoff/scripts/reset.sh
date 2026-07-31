@@ -12,8 +12,9 @@ STATE_DIR="${CC_HANDOFF_STATE_DIR:-$HOME/.claude/handoff-state}"
 session_id=$(cat | jq -r '.session_id // ""' 2>/dev/null)
 [ -n "$session_id" ] || exit 0
 
-# armed-/used- 是舊版 Stop hook 的狀態檔，一併清掉殘留
-rm -f "$STATE_DIR/fired-$session_id" \
+# fired-/armed-/used- 是舊版 Stop hook 的狀態檔，一併清掉殘留
+rm -f "$STATE_DIR/nags-$session_id" \
+      "$STATE_DIR/fired-$session_id" \
       "$STATE_DIR/armed-$session_id" \
       "$STATE_DIR/used-$session_id" 2>/dev/null
 

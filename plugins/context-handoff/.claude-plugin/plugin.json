@@ -1,6 +1,6 @@
 {
   "name": "context-handoff",
-  "version": "2.0.0",
+  "version": "2.1.0",
   "description": "Context 用量達門檻時自動觸發 handoff 並提醒換 session",
   "author": {
     "name": "Sam Lin",

@@ -87,7 +87,10 @@ Claude Code 的 hook payload **不含任何 token 欄位**（只有 statusline �
 
 1. 當下用量 < 門檻 → 靜默放行
 2. 當下用量 ≥ 門檻 → 注入 `additionalContext`，要 Claude 先跑 `handoff` skill 把進度寫進記憶、告訴你換 session，並**不要動你這則訊息交派的工作**；同時用 `systemMessage` 讓你也看到
-3. 同一個 session 觸發過一次後降級為不阻斷的提醒——你選擇繼續用就尊重你，否則每次送訊息都被攔會沒辦法工作
+3. transcript 尾端查得到 `handoff` skill 真的被呼叫過 → 收手，只留一行提醒
+4. 催了 `CC_HANDOFF_MAX_NAGS` 次仍沒交接 → 當你是刻意要繼續用，降級為不打斷的提醒
+
+第 3 點的判準是「transcript 說 handoff 跑過了」而不是「我催過了」。`additionalContext` 只是注入指示，沒有任何機制保證 Claude 一定照做；催一次就記帳收手的話，模型忽略一次，這個 session 就再也不會交接，而且完全靜默。掃描只看尾端 `CC_HANDOFF_LOOKBACK` 筆——compact 之後 context 會塌回去，先前那次 handoff 早就過期，掃全檔會讓舊記錄永遠壓住後續觸發。sidechain 裡的 handoff 不算數，那是 subagent 的事。
 
 hook 與 skill 放在同一個 plugin 裡是必要的：hook 觸發時會叫 Claude 執行 `handoff`，兩者分開的話，裝了 hook 卻沒有 skill 就會指向一個不存在的東西。
 
@@ -103,20 +106,33 @@ hook 與 skill 放在同一個 plugin 裡是必要的：hook 觸發時會叫 Cla
 
 必須用 `additionalContext` 而不是 `decision: "block"`：`UserPromptSubmit` 的 block 會把 prompt 直接作廢且**不產生任何 turn**，Claude 根本不會被呼叫，也就沒機會執行 `handoff` skill，結果只剩一句提醒而沒有真的交接。`additionalContext` 是把指示連同你的訊息一起送進去，Claude 照常有 turn，才能實際動用工具寫記憶。
 
+### compact 邊界必須尊重
+
+換到 `UserPromptSubmit` 之後多了一個 `Stop` 時代不存在的坑：這個 hook 在**使用者送出訊息的當下**跑，而 transcript 是 append-only，使用者的 prompt 一定排在 compact 後第一筆 assistant 訊息**之前**。所以那一刻直接取最後一筆 usage，讀到的是 compact **前**的舊數字。
+
+配上 `PostCompact` 剛把狀態清掉，後果是：使用者為了繼續工作才去 `/compact`，實際 context 已經從 315k 掉到 48k，卻在下一則訊息被劫持去做一次完全多餘的交接。
+
+所以 `used` 的計算遇到 `isCompactSummary == true` 就歸零重算；邊界之後還沒有任何 usage 就視為未達門檻、靜默放行。同一個邊界也套用在「handoff 跑過了沒」的掃描上——compact 前那次交接的內容已經過期，不該壓住後續觸發。
+
+（舊版 `Stop` 天然免疫：它在整輪結束後才跑，那時新數字已經寫進 transcript 了。）
+
 ### 為什麼不掛 PreCompact
 
 `PreCompact` 的語意是「壓縮**嘗試**前」而非「壓縮確定發生」。實測 `/compact` 因訊息太少而失敗（`Not enough messages to compact.`）時它照樣觸發，掛上去會在壓縮根本沒發生時誤清狀態。`PostCompact` 才代表真的壓縮完成。
 
 ### 幾個必要的防呆
 
-- payload 帶 `agent_id` 直接退出——subagent 送出的 prompt 也會觸發這個事件，但它的 context 與主 session 無關
+- payload 帶 `agent_id` 直接退出——subagent 送出的 prompt 也會觸發這個事件，但它的 context 與主 session 無關。**只認 `agent_id` 不認 `agent_type`**：文件寫 `agent_id`「present only when the hook fires inside a subagent call」，而 `claude --agent foo` 啟動的**主** session 帶的是 `agent_type`，連它一起擋會讓那種 session 永遠不交接——正是 bg 排除那個 bug 的翻版
 - transcript 過濾 `isSidechain != true`——不過濾的話，只要派過一次 subagent，最後一筆就是 subagent 的小 context，門檻永遠到不了且**完全靜默**
+- 用量從最後一個 compact 邊界（頂層 `isCompactSummary == true`）之後重算——見上面〈compact 邊界必須尊重〉
 
 ### 設定
 
 | 環境變數 | 預設 | 說明 |
 | --- | --- | --- |
 | `CC_HANDOFF_THRESHOLD` | `300000` | 觸發門檻（token）。1M context window 的 30% |
+| `CC_HANDOFF_MAX_NAGS` | `3` | 最多主動要求交接幾次，超過就只提醒 |
+| `CC_HANDOFF_LOOKBACK` | `300` | 往回掃幾筆 transcript 找 handoff 執行記錄 |
 | `CC_HANDOFF_DISABLE` | — | 設 `1` 完全停用 |
 | `CC_HANDOFF_TRACE` | — | 設成檔案路徑，把收到的 hook payload 附加寫入，除錯用 |
 | `CC_HANDOFF_STATE_DIR` | `~/.claude/handoff-state` | 狀態目錄，測試用來隔離 |
@@ -127,7 +143,15 @@ hook 與 skill 放在同一個 plugin 裡是必要的：hook 觸發時會叫 Cla
 CC_HANDOFF_THRESHOLD=5000 claude
 ```
 
-第一次送出訊息就會轉去做 handoff，之後只提醒不打斷。
+第一次送出訊息就會轉去做 handoff，跑完之後只提醒不打斷。
+
+想確認 hook 真的有被觸發（而不是註冊了卻靜默），加上 trace：
+
+```bash
+CC_HANDOFF_THRESHOLD=5000 CC_HANDOFF_TRACE=/tmp/upst.jsonl claude
+```
+
+`/tmp/upst.jsonl` 有 payload 但沒交接＝指示沒被照做；檔案空的＝hook 根本沒註冊到。
 
 ### 測試
 
@@ -135,13 +159,15 @@ CC_HANDOFF_THRESHOLD=5000 claude
 bash plugins/context-handoff/scripts/check.test.sh
 ```
 
-20 個分支案例，涵蓋 subagent 排除、sidechain 過濾、未達門檻靜默、達門檻注入指示、不重複觸發、bg session 必須觸發的回歸、PostCompact reset、停用開關與輸出合法性。全程在 `mktemp` 目錄裡用 `CC_HANDOFF_STATE_DIR` 隔離，不會動到真實狀態。
+13 組案例、35 條斷言，涵蓋 subagent 排除（且 `--agent` 主 session 不可誤殺）、sidechain 過濾、未達門檻靜默、達門檻注入指示、模型忽略時繼續催、催滿上限降級、handoff 跑過就收手、compact 邊界重算、bg session 必須觸發的回歸、PostCompact reset、停用開關與輸出合法性。全程在 `mktemp` 目錄裡用 `CC_HANDOFF_STATE_DIR` 隔離，不會動到真實狀態。
 
 ### 已知限制
 
 - **讀到的是上一輪的數字**：hook 觸發時最新的 usage 就是上一輪 assistant 訊息，也就是你送出訊息當下的實際 context 大小——這正是要比的量，但你這則訊息本身的 token 不算在內。在 1M window 用 30 萬當門檻餘裕充足。
-- **注入的是指示不是強制**：`additionalContext` 讓 Claude 看到並據此行動，但沒有機制能保證它一定照做。Hook 無法直接呼叫工具或 skill，這是 hooks 的設計邊界。
-- `trigger: "auto"`（自動壓縮）未實測，只驗過 `manual`。reset script 不讀 `trigger` 欄位，行為應該一致。
+- **compact 後第一則訊息一律放行**：邊界之後還沒有 usage 可讀，寧可漏一次也不要用陳舊數字誤觸發。下一輪就會恢復正常判斷。
+- **注入的是指示不是強制**：`additionalContext` 讓 Claude 看到並據此行動，但沒有機制能保證它一定照做。Hook 無法直接呼叫工具或 skill，這是 hooks 的設計邊界。所以才用「transcript 查得到 handoff 執行記錄」當收手條件，而不是「我催過了」。
+- `trigger: "auto"`（自動壓縮）未實測，只驗過 `manual`。reset script 不讀 `trigger` 欄位，行為應該一致；但 compact 邊界的偵測靠頂層 `isCompactSummary`，本機能找到的 compact transcript 全是 `manual`，auto 壓縮是否寫入相同標記沒有樣本可驗。若 auto 用了別的形狀，那條路徑會退回「用陳舊數字誤觸發」——不會比修正前更糟，但也不會被擋下。
+- **改了 hook 行為記得 bump `plugin.json` 的 `version`**：plugin 快取是按版本號分目錄的（`~/.claude/plugins/cache/sam-tools/context-handoff/<version>/`），版本沒動的話 `/plugin marketplace update` 之後可能仍在跑舊碼——又是一個「裝好了、沒錯誤、行為是舊的」情境。
 
 ## tsgo-lsp
 
