@@ -31,9 +31,11 @@ make_transcript() {
     printf '%s\n' "$body" > "$out"
 }
 
-run() { # run <session_id> <transcript> [stop_hook_active]
-    jq -n --arg s "$1" --arg t "$2" --argjson a "${3:-false}" \
-        '{session_id:$s, transcript_path:$t, hook_event_name:"Stop", stop_hook_active:$a}' \
+run() { # run <session_id> <transcript> [agent_id]
+    jq -n --arg s "$1" --arg t "$2" --arg a "${3:-}" \
+        '{session_id:$s, transcript_path:$t, cwd:"/tmp",
+          hook_event_name:"UserPromptSubmit", user_message:"接下來幫我改 X"}
+         + (if $a == "" then {} else {agent_id:$a, agent_type:"Explore"} end)' \
         | bash "$HOOK"
 }
 
@@ -51,75 +53,68 @@ check() { # check <label> <expected-substring|EMPTY> <actual>
 }
 
 export CC_HANDOFF_THRESHOLD=300000
-export CC_HANDOFF_MIN_DELTA=20000
 
-echo "── 1. stop_hook_active=true（防迴圈）"
+echo "── 1. subagent（payload 帶 agent_id）不觸發"
 make_transcript 999999 "" "$TMP/t1.jsonl"
-check "靜默不觸發" EMPTY "$(run sess-1 "$TMP/t1.jsonl" true)"
+check "靜默不觸發" EMPTY "$(run sess-1 "$TMP/t1.jsonl" subagent-uuid)"
+check "未建立 fired 記錄" EMPTY "$(ls "$CC_HANDOFF_STATE_DIR"/fired-sess-1 2>/dev/null)"
 
-echo "── 2. sessionKind=bg（背景 job 排除）"
-make_transcript 999999 bg "$TMP/t2.jsonl"
-check "靜默不觸發" EMPTY "$(run sess-2 "$TMP/t2.jsonl")"
+echo "── 2. transcript 不存在"
+check "靜默不觸發" EMPTY "$(run sess-2 "$TMP/nope.jsonl")"
 
-echo "── 3. transcript 不存在"
-check "靜默不觸發" EMPTY "$(run sess-3 "$TMP/nope.jsonl")"
+echo "── 3. 用量低於門檻"
+make_transcript 299999 "" "$TMP/t3.jsonl"
+check "靜默不觸發" EMPTY "$(run sess-3 "$TMP/t3.jsonl")"
+check "未建立 fired 記錄" EMPTY "$(ls "$CC_HANDOFF_STATE_DIR"/fired-sess-3 2>/dev/null)"
 
-echo "── 4. 用量低、預測不超過門檻"
-make_transcript 100000 "" "$TMP/t4.jsonl"
-check "靜默不觸發" EMPTY "$(run sess-4 "$TMP/t4.jsonl")"
-check "未建立 armed marker" EMPTY "$(ls "$CC_HANDOFF_STATE_DIR"/armed-sess-4 2>/dev/null)"
+echo "── 4. 用量達門檻 → 注入 handoff 指示"
+make_transcript 310000 "" "$TMP/t4.jsonl"
+out4=$(run sess-4 "$TMP/t4.jsonl")
+ctx4=$(printf '%s' "$out4" | jq -r '.hookSpecificOutput.additionalContext // ""')
+check "hookEventName 正確" "UserPromptSubmit" \
+    "$(printf '%s' "$out4" | jq -r '.hookSpecificOutput.hookEventName // ""')"
+check "指名 handoff skill" "handoff" "$ctx4"
+check "叫模型先別做使用者要求的工作" "先不要執行" "$ctx4"
+check "叫使用者換 session" "開新 session" "$ctx4"
+check "同時給使用者 systemMessage" "systemMessage" "$out4"
+check "留下 fired 記錄" "fired-sess-4" "$(ls "$CC_HANDOFF_STATE_DIR"/fired-sess-4 2>/dev/null)"
 
-echo "── 5. 預測下一輪超過門檻 → arm（不打斷本輪）"
-make_transcript 285000 "" "$TMP/t5.jsonl"
-out5=$(run sess-5 "$TMP/t5.jsonl")
-check "回 systemMessage 預警" "systemMessage" "$out5"
-check "不是 block" EMPTY "$(printf '%s' "$out5" | jq -r '.decision // ""')"
-check "建立 armed marker" "armed-sess-5" "$(ls "$CC_HANDOFF_STATE_DIR"/armed-sess-5 2>/dev/null)"
+echo "── 4b. 不可用 decision:block（block 不產生 turn，Claude 沒機會跑 skill）"
+check "沒有 decision 欄位" EMPTY "$(printf '%s' "$out4" | jq -r '.decision // ""')"
 
-echo "── 6. 已 armed 的下一輪 → fire"
-make_transcript 290000 "" "$TMP/t6.jsonl"
-out6=$(run sess-5 "$TMP/t6.jsonl")
-check "decision=block" "block" "$(printf '%s' "$out6" | jq -r '.decision // ""')"
-check "reason 指名 handoff skill" "handoff" "$(printf '%s' "$out6" | jq -r '.reason')"
-check "reason 叫使用者換 session" "開新 session" "$(printf '%s' "$out6" | jq -r '.reason')"
-check "marker 已清除（不會重複開火）" EMPTY "$(ls "$CC_HANDOFF_STATE_DIR"/armed-sess-5 2>/dev/null)"
+echo "── 5. 同 session 第二次送出 → 只提醒不再注入指示"
+make_transcript 340000 "" "$TMP/t5.jsonl"
+out5=$(run sess-4 "$TMP/t5.jsonl")
+check "仍給 systemMessage 提醒" "systemMessage" "$out5"
+check "不再注入 additionalContext" EMPTY \
+    "$(printf '%s' "$out5" | jq -r '.hookSpecificOutput.additionalContext // ""')"
 
-echo "── 7. fire 過後同 session 不再重複 block（連兩輪）"
-make_transcript 295000 "" "$TMP/t7.jsonl"
-out7=$(run sess-5 "$TMP/t7.jsonl")
-check "第 1 輪不 block" EMPTY "$(printf '%s' "$out7" | jq -r '.decision // ""')"
-check "第 1 輪仍給提醒" "systemMessage" "$out7"
-make_transcript 340000 "" "$TMP/t7b.jsonl"
-check "第 2 輪（用量再升）仍不 block" EMPTY \
-    "$(run sess-5 "$TMP/t7b.jsonl" | jq -r '.decision // ""')"
+echo "── 6. 回歸：sessionKind=bg 也必須觸發"
+# 舊版 Stop hook 把 bg 一律排除，導致使用者日常在用的背景 session 永遠不交接
+make_transcript 310000 bg "$TMP/t6.jsonl"
+check "bg session 照樣注入指示" "handoff" \
+    "$(run sess-6 "$TMP/t6.jsonl" | jq -r '.hookSpecificOutput.additionalContext // ""')"
 
-echo "── 8. 已超過門檻 → 立刻 fire 不等下一輪"
-rm -rf "$CC_HANDOFF_STATE_DIR"
-make_transcript 310000 "" "$TMP/t8.jsonl"
-check "decision=block" "block" "$(run sess-8 "$TMP/t8.jsonl" | jq -r '.decision // ""')"
-check "留下 fired 記錄" "fired-sess-8" "$(ls "$CC_HANDOFF_STATE_DIR"/fired-sess-8 2>/dev/null)"
-
-echo "── 8b. PostCompact reset → 狀態清空可重新計算"
-jq -n '{session_id:"sess-8", hook_event_name:"PostCompact", trigger:"manual"}' | bash "$RESET"
-check "fired 記錄已清除" EMPTY "$(ls "$CC_HANDOFF_STATE_DIR"/fired-sess-8 2>/dev/null)"
-check "armed 記錄已清除" EMPTY "$(ls "$CC_HANDOFF_STATE_DIR"/armed-sess-8 2>/dev/null)"
-
-echo "── 9. isSidechain 過濾（subagent 小 context 不可蓋過主 session）"
-make_transcript 310000 "" "$TMP/t9.jsonl"
+echo "── 7. isSidechain 過濾（subagent 小 context 不可蓋過主 session）"
+make_transcript 310000 "" "$TMP/t7.jsonl"
 jq -n '{type:"assistant", isSidechain:true,
         message:{usage:{input_tokens:500, cache_creation_input_tokens:0,
-                        cache_read_input_tokens:0, output_tokens:0}}}' >> "$TMP/t9.jsonl"
-rm -rf "$CC_HANDOFF_STATE_DIR"
-check "仍以主 session 用量判定 → block" "block" \
-    "$(run sess-9 "$TMP/t9.jsonl" | jq -r '.decision // ""')"
+                        cache_read_input_tokens:0, output_tokens:0}}}' >> "$TMP/t7.jsonl"
+check "仍以主 session 用量判定 → 觸發" "handoff" \
+    "$(run sess-7 "$TMP/t7.jsonl" | jq -r '.hookSpecificOutput.additionalContext // ""')"
 
-echo "── 10. CC_HANDOFF_DISABLE=1"
-rm -rf "$CC_HANDOFF_STATE_DIR"
-check "完全停用" EMPTY "$(CC_HANDOFF_DISABLE=1 run sess-10 "$TMP/t8.jsonl")"
+echo "── 8. PostCompact reset → 清掉記錄可重新觸發"
+jq -n '{session_id:"sess-4", hook_event_name:"PostCompact", trigger:"manual"}' | bash "$RESET"
+check "fired 記錄已清除" EMPTY "$(ls "$CC_HANDOFF_STATE_DIR"/fired-sess-4 2>/dev/null)"
+check "清除後再次送出會重新注入指示" "handoff" \
+    "$(run sess-4 "$TMP/t5.jsonl" | jq -r '.hookSpecificOutput.additionalContext // ""')"
 
-echo "── 11. 輸出為合法 JSON"
-rm -rf "$CC_HANDOFF_STATE_DIR"
-check "arm 輸出可被 jq 解析" "systemMessage" "$(run sess-11 "$TMP/t5.jsonl" | jq -r 'keys[0]')"
+echo "── 9. CC_HANDOFF_DISABLE=1"
+check "完全停用" EMPTY "$(CC_HANDOFF_DISABLE=1 run sess-9 "$TMP/t4.jsonl")"
+
+echo "── 10. 輸出為合法 JSON"
+check "觸發時輸出可被 jq 解析" "hookSpecificOutput" \
+    "$(run sess-10 "$TMP/t4.jsonl" | jq -r 'keys | join(",")')"
 
 echo
 echo "PASS=$pass FAIL=$fail"

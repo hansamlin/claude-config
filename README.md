@@ -30,7 +30,7 @@ private repo 可以直接當 marketplace source——Claude Code 用 SSH clone�
 
 | Plugin | 提供 |
 | --- | --- |
-| `context-handoff` | `Stop` / `PostCompact` hook + `handoff` skill |
+| `context-handoff` | `UserPromptSubmit` / `PostCompact` hook + `handoff` skill |
 | `tsgo-lsp` | TypeScript 7 native (tsgo) LSP server |
 
 ### install.sh 負責的（plugin 管不到）
@@ -83,16 +83,25 @@ fragment 裡的路徑寫成 `__CLAUDE_DIR__` 佔位符，安裝時填成實際�
 
 Claude Code 的 hook payload **不含任何 token 欄位**（只有 statusline 拿得到 `.context_window`），所以用量得自己從 `transcript_path` 那份 JSONL 算：取最後一筆非 sidechain 的 assistant 訊息，把 `input_tokens + cache_creation_input_tokens + cache_read_input_tokens + output_tokens` 相加。這個公式已對照 statusline 的 `total_input_tokens + total_output_tokens` 實測相等。
 
-`Stop` hook 每輪對話結束都會跑：
+`UserPromptSubmit` hook 在**你每次送出訊息時**跑，邏輯只有一條：
 
-1. 預測下一輪會破門檻 → 寫 armed marker、給一行預警，**不打斷本輪**
-2. 下一輪結束看到 marker → 回 `decision: "block"`，要求 Claude 呼叫 `handoff` skill、告知使用者換 session、然後停手
-3. 已經破門檻 → 不等下一輪，當場觸發
-4. 觸發過一次後降級為不阻斷的提醒——使用者選擇繼續用就尊重他，否則每輪被 block 沒辦法工作
+1. 當下用量 < 門檻 → 靜默放行
+2. 當下用量 ≥ 門檻 → 注入 `additionalContext`，要 Claude 先跑 `handoff` skill 把進度寫進記憶、告訴你換 session，並**不要動你這則訊息交派的工作**；同時用 `systemMessage` 讓你也看到
+3. 同一個 session 觸發過一次後降級為不阻斷的提醒——你選擇繼續用就尊重你，否則每次送訊息都被攔會沒辦法工作
 
 hook 與 skill 放在同一個 plugin 裡是必要的：hook 觸發時會叫 Claude 執行 `handoff`，兩者分開的話，裝了 hook 卻沒有 skill 就會指向一個不存在的東西。
 
-`PostCompact` hook 只做清理：壓縮後 context 會塌回去，先前 armed 的判斷就過期了。
+`PostCompact` hook 只做清理：壓縮後 context 會塌回去，先前「已交接過」的記錄就過期了。
+
+### 為什麼掛 UserPromptSubmit 而不是 Stop
+
+早期版本掛 `Stop`，在每輪對話結束時算用量、預測下一輪會不會破門檻、先 arm 再 fire。換掉的三個理由：
+
+- **不用猜 session 是不是有人在用**。`Stop` 版本靠 `sessionKind == "bg"` 排除背景 job，前提是「背景 job 沒有換 session 這回事」。實際上透過背景 job 開的 session 一樣會在裡面來回對話（實測一個 26 輪、338k tokens 的工作 session 就標成 `bg`），這條排除等於把日常用的 session 全部靜默擋掉，門檻永遠不觸發。`UserPromptSubmit` 只在人真的送出訊息時才觸發，事件本身就是「有人在互動」的證據，不必再猜。
+- **不用預測下一輪**。攔截點落在你交派新任務的當下，直接比對當前用量就夠，`armed` marker、`delta` 下限、上一輪用量的狀態檔全部可以砍掉。
+- **攔在動工前而不是動工後**。`Stop` 最快也只能在 Claude 做完一整輪之後才打斷，那輪的 token 已經燒掉了。
+
+必須用 `additionalContext` 而不是 `decision: "block"`：`UserPromptSubmit` 的 block 會把 prompt 直接作廢且**不產生任何 turn**，Claude 根本不會被呼叫，也就沒機會執行 `handoff` skill，結果只剩一句提醒而沒有真的交接。`additionalContext` 是把指示連同你的訊息一起送進去，Claude 照常有 turn，才能實際動用工具寫記憶。
 
 ### 為什麼不掛 PreCompact
 
@@ -100,16 +109,14 @@ hook 與 skill 放在同一個 plugin 裡是必要的：hook 觸發時會叫 Cla
 
 ### 幾個必要的防呆
 
-- `stop_hook_active` 為 true 直接退出——否則 hook 觸發 Claude 續跑、續跑又觸發 hook，無限迴圈
+- payload 帶 `agent_id` 直接退出——subagent 送出的 prompt 也會觸發這個事件，但它的 context 與主 session 無關
 - transcript 過濾 `isSidechain != true`——不過濾的話，只要派過一次 subagent，最後一筆就是 subagent 的小 context，門檻永遠到不了且**完全靜默**
-- `sessionKind == "bg"` 跳過——背景 job 沒有「換 session」這回事，自動寫記憶只是副作用
 
 ### 設定
 
 | 環境變數 | 預設 | 說明 |
 | --- | --- | --- |
 | `CC_HANDOFF_THRESHOLD` | `300000` | 觸發門檻（token）。1M context window 的 30% |
-| `CC_HANDOFF_MIN_DELTA` | `20000` | 預測下一輪成長量的下限 |
 | `CC_HANDOFF_DISABLE` | — | 設 `1` 完全停用 |
 | `CC_HANDOFF_TRACE` | — | 設成檔案路徑，把收到的 hook payload 附加寫入，除錯用 |
 | `CC_HANDOFF_STATE_DIR` | `~/.claude/handoff-state` | 狀態目錄，測試用來隔離 |
@@ -120,7 +127,7 @@ hook 與 skill 放在同一個 plugin 裡是必要的：hook 觸發時會叫 Cla
 CC_HANDOFF_THRESHOLD=5000 claude
 ```
 
-第一輪出現預警，第二輪結束時執行 handoff，第三輪之後只提醒不打斷。
+第一次送出訊息就會轉去做 handoff，之後只提醒不打斷。
 
 ### 測試
 
@@ -128,11 +135,12 @@ CC_HANDOFF_THRESHOLD=5000 claude
 bash plugins/context-handoff/scripts/check.test.sh
 ```
 
-22 個分支案例，涵蓋防迴圈、bg 排除、sidechain 過濾、arm 不打斷本輪、fire、不重複 fire、PostCompact reset、停用開關與輸出合法性。全程在 `mktemp` 目錄裡用 `CC_HANDOFF_STATE_DIR` 隔離，不會動到真實狀態。
+20 個分支案例，涵蓋 subagent 排除、sidechain 過濾、未達門檻靜默、達門檻注入指示、不重複觸發、bg session 必須觸發的回歸、PostCompact reset、停用開關與輸出合法性。全程在 `mktemp` 目錄裡用 `CC_HANDOFF_STATE_DIR` 隔離，不會動到真實狀態。
 
 ### 已知限制
 
-- **一輪延遲**：Stop hook 執行時本輪最後一筆 usage 可能還沒寫進 transcript，讀到的通常是上一輪的數字。加上 arm→fire 本身再延一輪，最壞約兩輪滯後。誤差偏安全邊（漏讀那輪會讓下次 delta 變大、提早觸發），在 1M window 用 30 萬當門檻餘裕充足。
+- **讀到的是上一輪的數字**：hook 觸發時最新的 usage 就是上一輪 assistant 訊息，也就是你送出訊息當下的實際 context 大小——這正是要比的量，但你這則訊息本身的 token 不算在內。在 1M window 用 30 萬當門檻餘裕充足。
+- **注入的是指示不是強制**：`additionalContext` 讓 Claude 看到並據此行動，但沒有機制能保證它一定照做。Hook 無法直接呼叫工具或 skill，這是 hooks 的設計邊界。
 - `trigger: "auto"`（自動壓縮）未實測，只驗過 `manual`。reset script 不讀 `trigger` 欄位，行為應該一致。
 
 ## tsgo-lsp
