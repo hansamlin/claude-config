@@ -159,7 +159,7 @@ CC_HANDOFF_THRESHOLD=5000 CC_HANDOFF_TRACE=/tmp/upst.jsonl claude
 bash plugins/context-handoff/scripts/check.test.sh
 ```
 
-13 組案例、34 條斷言，涵蓋 subagent 排除（且 `--agent` 主 session 不可誤殺）、sidechain 過濾、未達門檻靜默、達門檻注入指示、模型忽略時繼續催、催滿上限降級、handoff 跑過就收手、compact 邊界重算、bg session 必須觸發的回歸、PostCompact reset、停用開關與輸出合法性。全程在 `mktemp` 目錄裡用 `CC_HANDOFF_STATE_DIR` 隔離，不會動到真實狀態。
+13 組案例、35 條斷言，涵蓋 subagent 排除（且 `--agent` 主 session 不可誤殺）、sidechain 過濾、未達門檻靜默、達門檻注入指示、模型忽略時繼續催、催滿上限降級、handoff 跑過就收手、compact 邊界重算、bg session 必須觸發的回歸、PostCompact reset、停用開關與輸出合法性。全程在 `mktemp` 目錄裡用 `CC_HANDOFF_STATE_DIR` 隔離，不會動到真實狀態。
 
 ### 已知限制
 

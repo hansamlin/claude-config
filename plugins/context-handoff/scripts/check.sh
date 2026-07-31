@@ -61,7 +61,7 @@ session_id=$(jq_in '.session_id // ""')
 # 多餘的交接。邊界之後還沒有 usage 就視為未達門檻，靜默放行。
 # （舊版 Stop hook 天然免疫：它在整輪結束後才跑，那時新數字已經寫進去了。）
 used=$(jq -r '
-    if (.isCompactSummary == true) then
+    if (.isCompactSummary == true and (.isSidechain != true)) then
         "R"
     elif (.type == "assistant" and (.isSidechain != true) and .message.usage != null) then
         ((.message.usage.input_tokens // 0)
@@ -83,7 +83,7 @@ esac
 # 只看尾端一段：compact 之後 context 會塌回去，先前那次 handoff 早就過期，
 # 掃全檔會讓舊記錄永遠壓住後續的觸發。
 if [ "$(tail -n "$LOOKBACK" "$transcript" 2>/dev/null | jq -r '
-    if (.isCompactSummary == true) then
+    if (.isCompactSummary == true and (.isSidechain != true)) then
         "R"
     elif (.type == "assistant" and (.isSidechain != true)) then
         (.message.content[]?

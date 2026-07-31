@@ -178,6 +178,13 @@ append_usage "$TMP/t10d.jsonl" 320000
 check "邊界前的 handoff 不算數，邊界後要重新催" "handoff" \
     "$(ctx "$(run sess-10d "$TMP/t10d.jsonl")")"
 
+# sidechain 裡的 compact 邊界不是主 session 的邊界，不可拿來歸零
+make_transcript 310000 "" "$TMP/t10e.jsonl"
+jq -n '{type:"user", isSidechain:true, isCompactSummary:true,
+        message:{role:"user", content:"subagent 的 compact"}}' >> "$TMP/t10e.jsonl"
+check "sidechain 的 compact 邊界不算數" "handoff" \
+    "$(ctx "$(run sess-10e "$TMP/t10e.jsonl")")"
+
 echo "── 11. PostCompact reset → 清掉催告記錄可重新催"
 jq -n '{session_id:"sess-4", hook_event_name:"PostCompact", trigger:"manual"}' | bash "$RESET"
 check "nags 記錄已清除" EMPTY "$(ls "$CC_HANDOFF_STATE_DIR"/nags-sess-4 2>/dev/null)"
