@@ -99,17 +99,23 @@ done
 step "還原 tsgo-lsp 的 TypeScript"
 # vendor/node_modules 不進版控（約 30MB 二進位），從 lockfile 還原。
 # plugin 實際落地位置由 Claude Code 決定，所以用 find 定位。
-VENDOR=$(find "$CLAUDE_DIR/plugins" -type d -path '*tsgo-lsp/vendor' 2>/dev/null | head -1)
-if [ -z "$VENDOR" ]; then
-    VENDOR="$REPO/plugins/tsgo-lsp/vendor"
-fi
-log "vendor: $VENDOR"
-if [ "$DRY_RUN" = 0 ]; then
-    if [ -x "$VENDOR/node_modules/.bin/tsc" ]; then
-        log "已安裝，略過（要重裝就先刪掉 $VENDOR/node_modules）"
+# 可能同時存在 marketplaces/ 與 cache/ 兩份，逐一處理而非只取第一個
+found=0
+while IFS= read -r vendor; do
+    [ -n "$vendor" ] || continue
+    found=1
+    if [ -x "$vendor/node_modules/.bin/tsc" ]; then
+        log "已安裝，略過：$vendor"
     else
-        (cd "$VENDOR" && npm ci) || log "⚠ npm ci 失敗，請手動在上述目錄執行"
+        log "npm ci → $vendor"
+        if [ "$DRY_RUN" = 0 ]; then
+            (cd "$vendor" && npm ci >/dev/null 2>&1) || log "⚠ npm ci 失敗，請手動在該目錄執行"
+        fi
     fi
+done < <(find "$CLAUDE_DIR/plugins" -type d -path '*tsgo-lsp/vendor' 2>/dev/null)
+
+if [ "$found" = 0 ]; then
+    log "找不到已安裝的 tsgo-lsp，plugin 安裝完成後再跑一次這支腳本"
 fi
 
 step "完成"
