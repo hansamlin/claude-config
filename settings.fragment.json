@@ -63,6 +63,13 @@
     "tsgo-lsp@sam-tools": true
   },
   "extraKnownMarketplaces": {
+    "anthropic-agent-skills": {
+      "source": {
+        "source": "github",
+        "repo": "anthropics/skills"
+      },
+      "autoUpdate": true
+    },
     "karpathy-skills": {
       "source": {
         "source": "github",

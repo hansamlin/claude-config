@@ -96,11 +96,47 @@ else
     fi
 fi
 
+step "註冊 marketplace"
+# extraKnownMarketplaces 跟底下的 enabledPlugins 是同一個坑：寫進 settings.json
+# 只是「宣告」，marketplace 不會真的落地，`claude plugin marketplace list` 根本
+# 看不到它。接著要裝該來源的 plugin 就會失敗，而訊息只說「not found in
+# marketplace」，看不出來是 marketplace 沒註冊。所以這裡逐一 add。
+# 已存在的會回「already on disk」並以 0 結束，可重複執行。
+TAB=$(printf '\t')
+MARKET_FAILED=''
+if [ "$CLAUDE_DIR" != "$HOME/.claude" ]; then
+    log "CLAUDE_DIR 非預設，略過──claude plugin 一律操作真實 ~/.claude，不吃這個變數"
+else
+    # source 可能是 github（有 .repo）或 directory（有 .path），兩種都餵得進 add
+    MARKETS=$(jq -r '.extraKnownMarketplaces // {} | to_entries[]
+                     | .key + "\t" + (.value.source.repo // .value.source.path // "")' \
+              "$REPO/settings.fragment.json")
+    while IFS="$TAB" read -r name src; do
+        [ -n "$name" ] || continue
+        if [ -z "$src" ]; then
+            log "⚠ $name 的 source 沒有 repo/path，略過"
+            continue
+        fi
+        log "$name ($src)"
+        if [ "$DRY_RUN" = 0 ]; then
+            if out=$(claude plugin marketplace add "$src" 2>&1); then
+                printf '%s\n' "$out" | tail -1 | sed 's/^/    /'
+            else
+                printf '%s\n' "$out" | sed 's/^/    /'
+                MARKET_FAILED="$MARKET_FAILED $name"
+            fi
+        fi
+    done <<EOF
+$MARKETS
+EOF
+fi
+
 step "安裝 plugin"
 # settings.json 的 enabledPlugins 只是「啟用」旗標，不會讓 plugin 真的落地——
 # 沒跑過 install 的話 installed_plugins.json 是空的，hook 完全不會觸發且毫無錯誤訊息。
 # 所以這裡逐一安裝 fragment 裡列出的每一個，而不是只裝本 repo 自己的兩個。
 # 已安裝的 Claude Code 會自行略過，可重複執行。
+PLUGIN_FAILED=''
 if [ "$CLAUDE_DIR" != "$HOME/.claude" ]; then
     log "CLAUDE_DIR 非預設，略過──claude plugin 一律操作真實 ~/.claude，不吃這個變數"
 else
@@ -111,7 +147,15 @@ else
         [ -n "$p" ] || continue
         log "$p"
         if [ "$DRY_RUN" = 0 ]; then
-            claude plugin install "$p" 2>&1 | tail -1 | sed 's/^/    /' || true
+            # 成功時只留最後一行（避免刷版），失敗時整段印出來——失敗訊息在
+            # 第一行，之前 `| tail -1 | ... || true` 會把它丟掉又吞掉 exit code，
+            # 結果畫面上只剩一行空白，安裝失敗看起來跟成功一模一樣。
+            if out=$(claude plugin install "$p" 2>&1); then
+                printf '%s\n' "$out" | tail -1 | sed 's/^/    /'
+            else
+                printf '%s\n' "$out" | sed 's/^/    /'
+                PLUGIN_FAILED="$PLUGIN_FAILED $p"
+            fi
         fi
     done <<EOF
 $PLUGINS
@@ -160,3 +204,18 @@ cat <<EOF
   之後 repo 有更新時，plugin 部分用 /plugin marketplace update 即可，
   只有 CLAUDE.md / statusline.sh / settings 變動才需要再跑這支腳本。
 EOF
+
+# 單一 plugin 裝不起來不該中斷整個安裝（其他項目照樣該套用），但也絕不能
+# 靜默——所以收集起來在最後彙總，並以非 0 結束，好讓 `./install.sh && ...`
+# 這種串接不會在有東西沒裝成的情況下往下走。
+if [ -n "$MARKET_FAILED" ] || [ -n "$PLUGIN_FAILED" ]; then
+    printf '\n⚠ 下列項目失敗（原因見上方該項底下）：\n'
+    for m in $MARKET_FAILED; do
+        printf '    marketplace  %s\n' "$m"
+    done
+    for p in $PLUGIN_FAILED; do
+        printf '    plugin       %s\n' "$p"
+    done
+    printf '  其餘步驟已完成。\n'
+    exit 1
+fi
