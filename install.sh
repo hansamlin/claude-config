@@ -12,16 +12,25 @@
 # 用法：
 #   ./install.sh              套用
 #   ./install.sh --dry-run    只顯示會做什麼
+#   sh install.sh             也可以——本檔刻意維持 POSIX sh 相容
 #
 # 環境變數：
 #   CLAUDE_DIR   目標目錄，預設 ~/.claude
 #
-# 註：底下一律用 if 而非 `[ x ] && cmd`——後者在 set -e 下條件不成立時
-# 會讓整個腳本以非 0 結束。
+# 註 1：底下一律用 if 而非 `[ x ] && cmd`——後者在 set -e 下條件不成立時
+#       會讓整個腳本以非 0 結束。
+# 註 2：不要用 process substitution `while ... done < <(cmd)`、`[[ ]]`、
+#       陣列、`${BASH_SOURCE[0]}`。這些是 bashism，`sh install.sh` 會在
+#       剖析階段就 syntax error（macOS 的 /bin/sh 是 bash 的 POSIX 模式，
+#       該模式停用 process substitution）。要餵迴圈請用 here-doc，見下方。
 
-set -euo pipefail
+set -eu
+# pipefail 不是 POSIX，dash 沒有；有才開，沒有就算了。
+if (set -o pipefail) 2>/dev/null; then
+    set -o pipefail
+fi
 
-REPO=$(cd "$(dirname "${BASH_SOURCE[0]}")" && pwd)
+REPO=$(cd "$(dirname "$0")" && pwd)
 CLAUDE_DIR="${CLAUDE_DIR:-$HOME/.claude}"
 
 DRY_RUN=0
@@ -94,13 +103,18 @@ step "安裝 plugin"
 if [ "$CLAUDE_DIR" != "$HOME/.claude" ]; then
     log "CLAUDE_DIR 非預設，略過──claude plugin 一律操作真實 ~/.claude，不吃這個變數"
 else
+    # 先取出清單再用 here-doc 餵迴圈：here-doc 是 POSIX，而且迴圈本體留在
+    # 當前 shell（用 `cmd | while` 的話迴圈會跑在 subshell，變數異動會丟失）。
+    PLUGINS=$(jq -r '.enabledPlugins // {} | keys[]' "$REPO/settings.fragment.json")
     while IFS= read -r p; do
         [ -n "$p" ] || continue
         log "$p"
         if [ "$DRY_RUN" = 0 ]; then
             claude plugin install "$p" 2>&1 | tail -1 | sed 's/^/    /' || true
         fi
-    done < <(jq -r '.enabledPlugins // {} | keys[]' "$REPO/settings.fragment.json")
+    done <<EOF
+$PLUGINS
+EOF
 fi
 
 step "還原 tsgo-lsp 的 TypeScript"
@@ -112,6 +126,9 @@ fi
 # vendor/node_modules 不進版控（約 30MB 二進位），從 lockfile 還原。
 # plugin 實際落地位置由 Claude Code 決定，所以用 find 定位。
 # 可能同時存在 marketplaces/ 與 cache/ 兩份，逐一處理而非只取第一個
+# 同上用 here-doc；這裡尤其不能用 pipe，否則 found=1 會留在 subshell 裡失效。
+# find 對讀不到的子目錄會回非 0，`|| true` 以免 set -e 中止。
+VENDORS=$(find "$CLAUDE_DIR/plugins" -type d -path '*tsgo-lsp/vendor' 2>/dev/null || true)
 found=0
 while IFS= read -r vendor; do
     [ -n "$vendor" ] || continue
@@ -124,7 +141,9 @@ while IFS= read -r vendor; do
             (cd "$vendor" && npm ci >/dev/null 2>&1) || log "⚠ npm ci 失敗，請手動在該目錄執行"
         fi
     fi
-done < <(find "$CLAUDE_DIR/plugins" -type d -path '*tsgo-lsp/vendor' 2>/dev/null)
+done <<EOF
+$VENDORS
+EOF
 
 if [ "$found" = 0 ]; then
     log "找不到已安裝的 tsgo-lsp，plugin 安裝完成後再跑一次這支腳本"

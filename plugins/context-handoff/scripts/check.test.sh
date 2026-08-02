@@ -197,6 +197,31 @@ echo "── 13. 輸出為合法 JSON"
 check "觸發時輸出可被 jq 解析" "hookSpecificOutput" \
     "$(run sess-12 "$TMP/t4.jsonl" | jq -r 'keys | join(",")')"
 
+echo "── 14. 頂層腳本維持 POSIX sh 相容"
+# install.sh / pull.sh 是使用者手動執行的腳本。有人打 `sh install.sh` 時，
+# bash 是「逐段剖析、逐段執行」——bashism 造成的 syntax error 會等到前面
+# 幾步都跑完、半套設定已經寫進 ~/.claude 之後才炸，訊息只有 syntax error，
+# 不會說已經做了什麼。這種錯誤無法用執行期守衛防禦（開頭的檢查攔不到後面
+# 才發生的剖析錯誤），唯一的辦法是保證整份檔案在 POSIX sh 底下剖析得過。
+# 所以那兩支不能出現 process substitution、[[ ]]、陣列、${BASH_SOURCE[0]}、
+# set -o pipefail 等 bash 專屬語法。
+# statusline.sh 與 check.sh / reset.sh 不列入：它們只由 Claude Code 以指定的
+# 直譯器呼叫，人不會手打 sh，沒必要為此限制它們能用的語法。
+if command -v dash >/dev/null 2>&1; then POSIX_SH=dash; else POSIX_SH=sh; fi
+REPO_ROOT=$(cd "$HERE/../../.." && pwd)
+for s in install.sh pull.sh; do
+    if [ ! -f "$REPO_ROOT/$s" ]; then
+        echo "  ⏭️  $s 不在此處，略過（非 repo 內執行）"
+        continue
+    fi
+    if err=$("$POSIX_SH" -n "$REPO_ROOT/$s" 2>&1); then
+        echo "  ✅ $s 可被 $POSIX_SH 剖析"; pass=$((pass+1))
+    else
+        echo "  ❌ $s 引入了 bashism，$POSIX_SH -n 失敗：$(printf '%s' "$err" | head -2)"
+        fail=$((fail+1))
+    fi
+done
+
 echo
 echo "PASS=$pass FAIL=$fail"
 [ "$fail" -eq 0 ]
