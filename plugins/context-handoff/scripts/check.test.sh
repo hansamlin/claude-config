@@ -207,8 +207,20 @@ echo "── 14. 頂層腳本維持 POSIX sh 相容"
 # set -o pipefail 等 bash 專屬語法。
 # statusline.sh 與 check.sh / reset.sh 不列入：它們只由 Claude Code 以指定的
 # 直譯器呼叫，人不會手打 sh，沒必要為此限制它們能用的語法。
+#
+# 檢查分兩層，因為單靠 `-n` 不夠：`-n` 只剖析不執行，抓得到 process
+# substitution 這種「剖析期」錯誤，卻放過 `set -o pipefail`、
+# `${BASH_SOURCE[0]}` 這種「執行期」才炸的 bashism（pull.sh 曾經就是
+# 通過 dash -n、實際用 dash 跑卻死在第 18 行）。
+#   第 1 層 dash -n        —— 剖析期
+#   第 2 層 已知 bashism 的 grep —— 執行期
+# 第 2 層是列舉式的，不宣稱窮盡；裝了 shellcheck 的話 `shellcheck -s sh`
+# 更完整，但這裡不強制依賴它。
 if command -v dash >/dev/null 2>&1; then POSIX_SH=dash; else POSIX_SH=sh; fi
 REPO_ROOT=$(cd "$HERE/../../.." && pwd)
+# 逐項說明：process substitution / [[ ]] / here-string / 陣列指派 /
+# declare / BASH_SOURCE / 行首無條件的 set ... pipefail / ${v,,} 大小寫轉換
+BASHISM='done <[[:space:]]*<\(|\[\[|<<<|^[[:space:]]*[A-Za-z_]+=\(|declare |BASH_SOURCE|^set .*pipefail|\$\{[A-Za-z_]+[,^]'
 for s in install.sh pull.sh; do
     if [ ! -f "$REPO_ROOT/$s" ]; then
         echo "  ⏭️  $s 不在此處，略過（非 repo 內執行）"
@@ -217,7 +229,16 @@ for s in install.sh pull.sh; do
     if err=$("$POSIX_SH" -n "$REPO_ROOT/$s" 2>&1); then
         echo "  ✅ $s 可被 $POSIX_SH 剖析"; pass=$((pass+1))
     else
-        echo "  ❌ $s 引入了 bashism，$POSIX_SH -n 失敗：$(printf '%s' "$err" | head -2)"
+        echo "  ❌ $s 剖析期 bashism，$POSIX_SH -n 失敗：$(printf '%s' "$err" | head -2)"
+        fail=$((fail+1))
+    fi
+    # 先取行號再濾掉註解行——否則檔頭那段「不要用 XXX」的說明會自己命中，
+    # 而且順序反過來的話 grep -n 會給出濾掉註解後的行號，對不上原檔
+    hits=$(grep -nE "$BASHISM" "$REPO_ROOT/$s" | grep -vE '^[0-9]+:[[:space:]]*#' || true)
+    if [ -z "$hits" ]; then
+        echo "  ✅ $s 無已知的執行期 bashism"; pass=$((pass+1))
+    else
+        echo "  ❌ $s 有執行期 bashism：$(printf '%s' "$hits" | head -3 | tr '\n' ' ')"
         fail=$((fail+1))
     fi
 done

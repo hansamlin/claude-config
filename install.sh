@@ -19,10 +19,11 @@
 #
 # 註 1：底下一律用 if 而非 `[ x ] && cmd`——後者在 set -e 下條件不成立時
 #       會讓整個腳本以非 0 結束。
-# 註 2：不要用 process substitution `while ... done < <(cmd)`、`[[ ]]`、
-#       陣列、`${BASH_SOURCE[0]}`。這些是 bashism，`sh install.sh` 會在
-#       剖析階段就 syntax error（macOS 的 /bin/sh 是 bash 的 POSIX 模式，
-#       該模式停用 process substitution）。要餵迴圈請用 here-doc，見下方。
+# 註 2：不要引入 bashism——process substitution `while ... done < <(cmd)`、
+#       `[[ ]]`、陣列、`<<<`、`${BASH_SOURCE[0]}`、無條件的 `set -o pipefail`。
+#       有人打 `sh install.sh` 時 bash 是逐段剖析執行，錯誤會等到前面幾步都
+#       跑完、半套設定已寫入 ~/.claude 之後才炸，且訊息不會說做了哪些。
+#       要餵迴圈請用 here-doc，見下方。check.test.sh 第 14 節會擋。
 
 set -eu
 # pipefail 不是 POSIX，dash 沒有；有才開，沒有就算了。
