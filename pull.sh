@@ -11,13 +11,23 @@
 # 用法：
 #   ./pull.sh              抓回來
 #   ./pull.sh --dry-run    只列出有差異的項目
+#   sh pull.sh             也可以——本檔刻意維持 POSIX sh 相容
 #
 # 環境變數：
 #   CLAUDE_DIR   來源目錄，預設 ~/.claude
+#
+# 註：不要引入 bashism（process substitution `< <(cmd)`、`[[ ]]`、陣列、
+#     `<<<`、`${BASH_SOURCE[0]}`、無條件的 `set -o pipefail`）。有人打
+#     `sh pull.sh` 時 bash 是逐段剖析執行，錯誤會等到前面幾步都跑完才炸，
+#     留下做到一半的狀態。check.test.sh 第 14 節會擋。
 
-set -euo pipefail
+set -eu
+# pipefail 不是 POSIX，dash 沒有；有才開，沒有就算了。
+if (set -o pipefail) 2>/dev/null; then
+    set -o pipefail
+fi
 
-REPO=$(cd "$(dirname "${BASH_SOURCE[0]}")" && pwd)
+REPO=$(cd "$(dirname "$0")" && pwd)
 CLAUDE_DIR="${CLAUDE_DIR:-$HOME/.claude}"
 
 # 一律用 if 而非 `[ x ] && cmd`——後者在 set -e 下條件不成立時會讓腳本提前結束
