@@ -42,9 +42,6 @@
     "defaultMode": "auto"
   },
   "worktree": {
-    "symlinkDirectories": [
-      "node_modules"
-    ],
     "baseRef": "head"
   },
   "enableWorkflows": true,
