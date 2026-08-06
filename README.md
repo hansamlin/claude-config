@@ -30,7 +30,7 @@ private repo 可以直接當 marketplace source——Claude Code 用 SSH clone�
 
 | Plugin | 提供 |
 | --- | --- |
-| `context-handoff` | `UserPromptSubmit` / `PreToolUse` / `PostCompact` hook + `handoff` skill |
+| `context-handoff` | `UserPromptSubmit` / `PreToolUse` / `PostToolUse` / `PostCompact` hook + `handoff` skill |
 | `tsgo-lsp` | TypeScript 7 native (tsgo) LSP server |
 
 ### install.sh 負責的（plugin 管不到）
@@ -205,15 +205,7 @@ if(U.stdout&&U.stdout.trim()||U.stderr&&U.stderr.trim())H=!0
 
 **「通知主 agent」不需要這支 hook。** 同一次實驗證明，拿掉 stdout 之後主 agent 從 sub agent 自己的最終回覆就完整拿到了：因 context 達上限中止、任務未完成、`agentId`、`subagent_tokens`、交接檔內容摘要，而且**主動**照著 deny 訊息的指示重派了同 `agent_type` / 同模型等級的續作 agent 去讀交接檔。deny 的 reason 已經把該說的話說完了。
 
-⚠️ 未來若要加回「機械保證的旁路通知」，**不可以**走 `SubagentStop`——它任何形式的輸出都等於「讓 sub agent 繼續跑」，換欄位、換措辭都繞不過去（理由見上）。對症的是 `Agent` 工具的 `PostToolUse`：schema 裡有
-
-```
-updatedToolOutput:E.unknown().describe("Replaces the tool output before it is sent to the model").optional()
-```
-
-它取代的正是 sub agent 回傳給主 agent 的那段內容，可以把「這個 sub agent 沒做完 + 交接檔路徑」硬塞進主 agent 一定會讀到的位置，把通知從模型順從性升級成機械保證。PostToolUse 的 matcher 比對的是 `tool_name`，而實測 payload 顯示派工工具的 `tool_name` 是 `Agent`（不是 `Task`），所以可以用 `"matcher": "Agent"` 精準只掛在派工上。另外事件表裡還有 `SubagentStart`（一樣帶 `additionalContext`），那是「對即將開始的 sub agent 說話」的通道——日後要做「續作 agent 必須先讀交接檔」的機械保證，那才是對的事件。
-
-這些都**還沒線上實測**，而且改 `hooks.json` 要重啟 session 才生效，所以這一版不做。
+⚠️ 旁路通知**不可以**走 `SubagentStop`——它任何形式的輸出都等於「讓 sub agent 繼續跑」，換欄位、換措辭都繞不過去（理由見上）。對症的是 `Agent` 工具的 `PostToolUse`，2.4.0 已經做進來了，見下一節。
 
 也不用 `decision: "block"`：block 的語意是「不准結束、繼續做」，但這個 sub agent 就是因為 context 滿了才被攔下來的，逼它繼續只會更糟。要接手的是**新的** sub agent。
 
@@ -224,6 +216,41 @@ updatedToolOutput:E.unknown().describe("Replaces the tool output before it is se
 - **不做 compact 邊界歸零**。sub agent transcript 會不會出現 `isCompactSummary` 沒有樣本可驗，就算出現，最壞只是誤觸發一次 deny——deny 對同一個 `agent_id` 只會發生一次，是自限的
 - **`PostCompact` 不清 `sa-*`**。那講的是主 session 被壓縮，與任何 sub agent 的 context 無關；清掉等於對一個 context 仍然滿的 sub agent 重新武裝 deny
 - **不在 `PreToolUse` 裡掃過期狀態檔**。`check.sh` 已經在掃了；這支是每次工具呼叫都跑，多一個 `find` 就是把成本乘上工具呼叫次數
+
+### 機械保證的旁路通知（`PostToolUse` + `matcher: Agent`，2.4.0）
+
+上面那條「主 agent 從 sub agent 的最終回覆得知」的通道實測夠用，但它終究是**模型順從性**：sub agent 若漏講交接檔路徑、或把半成品包裝成成品，主 agent 就接不上，而且沒有備援。`subagent-post.sh` 補上機制層：sub agent 回到父對話的那一刻，如果它有寫出交接檔，就在回傳內容**後面附加**一段警示。
+
+**為什麼 `PostToolUse` 沒有 `SubagentStop` 那個風險。** 消費端完全不同：
+
+```js
+if(p.updatedToolOutput!==void 0)yield{updatedToolOutput:p.updatedToolOutput};
+if(p.preventContinuation){...yield hook_stopped_continuation...;return}
+if(p.additionalContexts&&p.additionalContexts.length>0)...
+```
+
+**沒有任何「續跑」旗標**——恰恰相反，它有一個明示的 `preventContinuation` 用來「停止」。2.2.0 那條「用了一條沒驗過的通道結果造成續跑」的風險在結構上不存在。端到端實測也確認：sub agent 交接完直接收尾，主 agent 側 `Agent` 工具恰好呼叫 1 次。
+
+**⚠️ 被派出去那個 sub agent 的 id 在 `tool_response.agentId`，不是頂層 `agent_id`。** 實測 payload 的頂層欄位是 `cwd / duration_ms / effort / hook_event_name / permission_mode / prompt_id / session_id / tool_input / tool_name / tool_response / tool_use_id / transcript_path`——**完全沒有 `agent_id` / `agent_type`**。這支 hook 跑在**父**對話的工具管線裡（`Agent` 工具是在主 agent 那一側執行的），所以帶的 agent context 是父的。`tool_response` 則帶 `agentId / agentType / status / resolvedModel / totalTokens / totalToolUseCount / usage / content`，其中 `agentId` 與 `<session>/subagents/agent-<id>.jsonl` 的檔名逐字相同。
+
+**⚠️⚠️ `updatedToolOutput` 送的必須是整個 `tool_response` 物件。** 這條踩過兩次才確定。套用端會拿**工具自己的 `outputSchema`** 驗：
+
+```js
+if(nt){ let Ke=e.outputSchema?.safeParse(He);
+  let st=(err)=>{ …He=se.data /* 退回原輸出 */,
+                  Fe.push({message:bl({type:"hook_error_during_execution",
+                    content:`…does not match ${e.name}'s output shape;
+                             using original output. ${err}`…})}) };
+  if(Ke&&!Ke.success) st(Ke.error.message); … }
+```
+
+實測送**純字串**與送**單獨的 content 陣列**都失敗，主 transcript 裡各留下一筆 `hook_error_during_execution`、訊息是 `does not match Agent's output shape; using original output`，工具結果原封不動。**失敗是靜默降級**——原輸出照送、只多一則 attachment，不會壞掉主流程，但也等於這個 hook 白做了。所以實作是 `.tool_response | .content += [新 block]`：整個接住，只把 content 加長。逐一列舉欄位會在 schema 一改時靜默失效。
+
+**一定要附加不是取代。** `.describe()` 寫的是 *Replaces*，但 sub agent 的回覆裡可能有已完成的部分結論，丟掉會損失資訊。實測結果是主 agent 同時收到 sub agent 原本的回覆**和**注入的警示。
+
+**⚠️ 續接路徑（`SendMessage`）不走這支 hook。** matcher 綁的是 `Agent`，而主 agent 用 `SendMessage` 續接既有 sub agent 時 `tool_name` 是 `SendMessage`——實測一次「派工 → `SendMessage` 續接」的完整流程，PostToolUse 只在 `Agent` 那次觸發。這條路徑很現實：harness 自己就在每則 sub agent 回覆結尾廣告它（`use SendMessage with to: '<agentId>' to continue this agent`），而「同一個 sub agent 被續跑」正是拿掉 SubagentStop 的核心理由。續接後那個 agent 的 context 只會更滿，交接檔也還在 `$STATE_DIR`，但主 agent 不會再收到機械保證的提醒——**那條仍是順從性**。要不要把 matcher 擴到 `SendMessage` 是未決問題：得先確認它的 PostToolUse payload 有沒有帶得到 `agentId`，還沒驗。
+
+事件表裡還有 `SubagentStart`（帶 `additionalContext`），那是「對即將開始的 sub agent 說話」的通道——日後要做「續作 agent 必須先讀交接檔」的機械保證，那才是對的事件，目前仍是順從性。
 
 ### 7 天清掃必須排在所有早退之前
 
@@ -273,7 +300,13 @@ bash plugins/context-handoff/scripts/subagent-check.test.sh
 
 壓軸是一組**端到端**斷言：讓 `subagent-check.sh` 自己寫出 `sa-<agent_id>`，然後在六次工具呼叫裡換工具、換 `permission_mode`、把用量再翻倍、跨過「收工 → 被續跑」的分界，斷言**合計恰好 1 次 deny**。它取代了 2.2.x 那組跨檔回歸（`subagent-stop.sh` 已不存在），驗的性質也更強——不是「兩支腳本互動正確」，而是「不論中途發生什麼，deny 只發生一次」。
 
+`subagent-post.test.sh` 有 12 組、37 條斷言，涵蓋交接檔不存在時完全靜默、存在時注入且**是附加不是取代**（原 content block 原封不動、數量從 1 變 2）、`tool_response` 的七個欄位必須原封帶回（`outputSchema` 驗證的回歸）、取不到 `agentId` 靜默、`agentId` 路徑注入防護、`tool_name` 不是 `Agent` 靜默（含 `AgentSomething` 這種前綴誤命中）、`content` 不是陣列靜默、停用開關、`CC_HANDOFF_TRACE`，以及 `hooks.json` 的 matcher 必須是 `Agent` 的結構斷言。
+
 **每一條新斷言都要有 red 證據**——恆綠是缺陷，不是通過。2.3.0 那批的 mutation 紀錄：把 `SubagentStop` 註冊加回 `hooks.json` → FAIL=1；把 `subagent-stop.sh` 檔案放回來 → FAIL=1；把記帳那行 `printf ... > "$state"` 換成 no-op → FAIL=13（其中「六次呼叫恰好 1 次 deny」變成 6）；把 `check.sh` 的 `find` 移回早退之後 → `check.test.sh` FAIL=4。
+
+2.4.0 那批（`subagent-post.sh`）：改用頂層 `agent_id`（issue 原本的猜測）→ FAIL=21；取代而非附加 → FAIL=3；只送 content 陣列 → FAIL=19；拿掉 `tool_name` 守衛 → FAIL=2；拿掉 `content` 型別守衛 → FAIL=1；拿掉 `agentId` 消毒 → FAIL=1；`hooks.json` 的 matcher 改成 `Task` → FAIL=1。
+
+⚠️ 最後那條消毒的 red 證據是**第二次**才拿到的：第一版測試用 `d/../../victim`，但沒有先建出 `subagent-handoff-d/` 這個目錄，中間段不是真實目錄、路徑解析不到，**拿掉消毒也照樣綠**。這正是下面記載的第三種 vacuous test 陷阱，寫的人自己又踩了一次。
 
 這個習慣是 2.2.1 的教訓換來的：當時「stdout 要空」的規格漏了 stderr，把 `subagent-stop.sh` 的 `exec >/dev/null 2>&1` 改成只塞 stdout、再往 stderr 寫一行字，加了 `2>&1` 的新測試 FAIL=12，舊測試形態只 FAIL=1。舊的 17 組斷言**一條都抓不到**——斷言只覆蓋你寫進去的東西，規格漏了一半時全綠沒有意義。
 
@@ -287,7 +320,7 @@ bash plugins/context-handoff/scripts/subagent-check.test.sh
 - **compact 後第一則訊息一律放行**：邊界之後還沒有 usage 可讀，寧可漏一次也不要用陳舊數字誤觸發。下一輪就會恢復正常判斷。
 - **注入的是指示不是強制**：`additionalContext` 讓 Claude 看到並據此行動，但沒有機制能保證它一定照做。Hook 無法直接呼叫工具或 skill，這是 hooks 的設計邊界。所以才用「transcript 查得到 handoff 執行記錄」當收手條件，而不是「我催過了」。
 - `trigger: "auto"`（自動壓縮）未實測，只驗過 `manual`。reset script 不讀 `trigger` 欄位，行為應該一致；但 compact 邊界的偵測靠頂層 `isCompactSummary`，本機能找到的 compact transcript 全是 `manual`，auto 壓縮是否寫入相同標記沒有樣本可驗。若 auto 用了別的形狀，那條路徑會退回「用陳舊數字誤觸發」——不會比修正前更糟，但也不會被擋下。
-- **主 agent 得知 sub agent 中止，靠的是 sub agent 自己的最終回覆——沒有機械保證的旁路通知**。`SubagentStop` **不能**拿來做這件事（它的任何輸出——stdout、stderr、非零 exit——都等於叫已結束的 sub agent 繼續跑，滾成無限 deny 迴圈，見上），2.3.0 起連註冊都不存在了。實測上這條通道是夠用的：主 agent 收得到中止原因、`agentId`、token 數，也會主動重派續作 agent。但它終究是模型順從性，不是機制；有 schema 佐證、值得試的機械化候選是 `Agent` 的 `PostToolUse` + `updatedToolOutput`，尚未實測。
+- **主 agent 得知 sub agent 中止有兩條通道，一條是機制、一條是順從性**。機制那條是 `PostToolUse` + `updatedToolOutput`（2.4.0，見上）；順從性那條是 sub agent 自己的最終回覆。`SubagentStop` **不能**拿來做這件事（它的任何輸出——stdout、stderr、非零 exit——都等於叫已結束的 sub agent 繼續跑，滾成無限 deny 迴圈，見上），2.3.0 起連註冊都不存在了。⚠️ 機制那條的失敗模式是**靜默降級**：`updatedToolOutput` 若不符 `Agent` 的 `outputSchema`，原輸出照送、只在 transcript 留一則 `hook_error_during_execution`，沒有人會發現。日後 `tool_response` 的 schema 一改就可能中招——`subagent-post.test.sh` 第 4 組是為此設的回歸
 - **sub agent 的最後一輪沒有工具呼叫**（產生最終回覆的那一輪），所以它若剛好在最後一輪才越過門檻，`PreToolUse` 永遠攔不到，半成品仍會被當成成果回報。這是把攔截點掛在工具呼叫上的結構性代價，無解。
 - **sub agent 那條鏈上有三個環節只是模型順從性**：(a) sub agent 收到 deny reason 後有沒有真的去寫交接檔、(b) 交接檔內容夠不夠讓人接手、(c) **它有沒有在最終回覆裡如實說「我沒做完」**——(a) 和 (c) 都不再有 hook 可以兜底，2.2.0 那層兜底已被證實有害而移除
 - **`PreToolUse` payload 的 `transcript_path` 在 sub agent 內指向主檔還是專屬檔未實測**，所以兩種形狀都涵蓋；兩個候選都不存在就靜默退出。這條路徑的失敗模式是「永遠不觸發且完全靜默」，要確認它有在跑就掛 `CC_HANDOFF_TRACE`
