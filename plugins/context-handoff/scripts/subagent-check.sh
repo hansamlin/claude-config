@@ -8,11 +8,22 @@
 #   完成回報出去。工具呼叫是 sub agent 迴圈裡唯一每一輪都會經過的關卡。
 #
 # 為什麼用 permissionDecision:"deny"：
-#   PreToolUse 沒有 additionalContext 這種「不擋、只注入」的管道（那是
-#   UserPromptSubmit 才有的）。deny 的 permissionDecisionReason 是唯一能在
-#   sub agent 迴圈中途對它下達指示、而且模型看得到的通道。代價是這次工具
-#   呼叫會被取消——所以指示裡必須明講「原本的工作不用做了」，否則模型會
-#   以為只是這一步被擋、換個工具再試一次。
+#   deny **不是**唯一的通道——PreToolUse 的 hookSpecificOutput schema 也明列
+#   `additionalContext: string().optional()`（binary 反查，Claude Code 2.1.223），
+#   消費端獨立處理、與權限決定無關，也就是「不擋、只注入」是做得到的。
+#   我們仍然刻意選 deny，理由是**語意強度**：這裡要的是「立刻停止原本的工作」，
+#   而不是「在你原本的工作旁邊多給你一段話」。代價是損失一次工具呼叫，可接受。
+#   也因為是 deny，指示裡必須明講「原本的工作不用做了」，否則模型會以為只是
+#   這一步被擋、換個工具再試一次。
+#   日後若想壓低這個代價，`allow` + `additionalContext` 是有 schema 佐證的實驗
+#   方向；但**仍然必須保留 `sa-<agent_id>` 記帳**，否則會變成每一次工具呼叫都
+#   注入一次。
+#
+# 什麼情況下寧可完全不攔（見下方 SKIP_TYPES 與 plan mode 兩段早退）：
+#   deny 的整套價值建立在「sub agent 收到指示後真的寫得出交接檔」上。寫不出來
+#   的時候，攔截等於取消一次工具呼叫、叫它去做一件做不到的事，什麼都沒留下，
+#   **比不攔更糟**。已知兩種寫不出來的情況：沒有 Write 工具的 agent_type
+#   （Explore / Plan），以及 plan mode（寫檔是白名單制，交接檔不在名單內）。
 #
 # 為什麼只 deny 一次（見 sa-<agent_id> 狀態檔）：
 #   deny 是無差別的，擋掉的是「這次工具呼叫」而不是「某類工具」。持續 deny
@@ -45,14 +56,31 @@
 # hooks.json 為什麼給 timeout 5（比 check.sh 的 15 短）：
 #   JSON 不能寫註解，理由記在這裡。這支是**每一次工具呼叫**都跑，而且會擋在
 #   工具真正執行之前——逾時上限就是每個工具呼叫最壞情況要多等的秒數，乘上
-#   最多 20 個並發 sub agent。正常路徑只有 1~2 個 jq，5 秒綽綽有餘；真的卡住
-#   時 hook 逾時＝放行，損失一次交接，遠比拖慢每個工具呼叫划算。
+#   最多 20 個並發 sub agent。正常路徑只有 1~2 個 jq，5 秒綽綽有餘。
+#
+#   ⚠️ 舊註解斷言「hook 逾時＝放行」，那句**沒有一手證據支持**，已撤回。
+#   binary 裡唯一談 PreToolUse 逾時的字串是 `The tool call was not executed`，
+#   方向可能正好相反（逾時＝連工具都不執行）；但那段程式看起來屬於 SDK/HTTP 型
+#   hook 回呼的路徑，`type: "command"` 是否走同一條**未證實**。
+#   timeout 5 維持不變：不論答案是哪一邊，把暴露窗口縮短都是對的方向。
 #
 # 可調環境變數：
 #   CC_HANDOFF_SUBAGENT_THRESHOLD  sub agent 的觸發門檻（token），預設 300000。
 #                                  與主 session 的 CC_HANDOFF_THRESHOLD 分開，
 #                                  因為兩者調整的動機不同（主 session 是使用者
 #                                  體感，sub agent 是任務切段粒度）。
+#   CC_HANDOFF_SUBAGENT_SKIP_TYPES 完全不攔的 agent_type 清單（空白分隔），
+#                                  預設 `Explore Plan`。這兩種內建 agent 的工具集
+#                                  是「All tools except Agent, Artifact,
+#                                  ExitPlanMode, Edit, Write, NotebookEdit」——
+#                                  deny 訊息第 1 點要它用 Write 寫交接檔，它根本
+#                                  執行不了，結果是白白吃掉一次工具呼叫、什麼都
+#                                  沒留下，**比不攔更糟**。
+#                                  做成可覆寫而不是寫死在程式裡，是因為這份清單
+#                                  必然會腐爛：使用者隨時可以自訂沒有 Write 的
+#                                  agent，內建 agent 的工具集也可能改。寫死的話
+#                                  唯一的修法是改 plugin；做成環境變數，使用者
+#                                  自己就能補上或拿掉。
 #   CC_HANDOFF_DISABLE             設為 1 完全停用（與 check.sh 共用同一個開關）
 #   CC_HANDOFF_STATE_DIR           狀態目錄，預設 ~/.claude/handoff-state
 #   CC_HANDOFF_TRACE               設成檔案路徑則附加寫入收到的 payload，除錯用。
@@ -67,6 +95,11 @@ set -uo pipefail
 
 THRESHOLD="${CC_HANDOFF_SUBAGENT_THRESHOLD:-300000}"
 STATE_DIR="${CC_HANDOFF_STATE_DIR:-$HOME/.claude/handoff-state}"
+# 用 `-` 而不是本檔其他變數的 `:-`：這是刻意的差別。`:-` 會把空字串也當成
+# 「沒設定」而套用預設值，使用者就沒有任何辦法表達「一個都不要跳過」（只能塞
+# 一個不存在的假 type 進去）。這個變數的存在意義就是可覆寫，
+# `CC_HANDOFF_SUBAGENT_SKIP_TYPES=` 必須真的代表空清單。
+SKIP_TYPES="${CC_HANDOFF_SUBAGENT_SKIP_TYPES-Explore Plan}"
 
 input=$(cat)
 [ -n "${CC_HANDOFF_TRACE:-}" ] && printf '%s\n' "$input" >> "$CC_HANDOFF_TRACE"
@@ -77,11 +110,15 @@ input=$(cat)
 # tab 併成一個分隔符並吃掉頭尾空欄，空欄位（例如沒有 file_path）就會錯位。
 # file_path 過 `strings`：join 遇到非字串元素會整個 jq 失敗，而 tool_input 的
 # schema 是各工具自訂的（MCP 工具可能在同名 key 塞物件），不能假設它是字串。
-agent_id=""; agent_type=""; transcript=""; tool_name=""; file_path=""
-IFS=$'\001' read -r agent_id agent_type transcript tool_name file_path <<EOF
+# ⚠️ jq 的陣列順序與 read 的變數清單必須逐一對齊，加欄位時兩邊要一起改。
+# permission_mode 也過 `strings`，理由與 file_path 相同：join 遇到非字串
+# 元素會讓整個 jq 失敗，六個欄位全空→這個 sub agent 從此不再受監控。
+agent_id=""; agent_type=""; transcript=""; tool_name=""; file_path=""; perm_mode=""
+IFS=$'\001' read -r agent_id agent_type transcript tool_name file_path perm_mode <<EOF
 $(printf '%s' "$input" | jq -r '[.agent_id // "", .agent_type // "",
     .transcript_path // "", .tool_name // "",
-    ((.tool_input.file_path | strings) // "")] | join("\u0001")' 2>/dev/null)
+    ((.tool_input.file_path | strings) // ""),
+    ((.permission_mode | strings) // "")] | join("\u0001")' 2>/dev/null)
 EOF
 
 # 主 agent 的工具呼叫沒有 agent_id。這條路徑每一次工具呼叫都會走到，
@@ -93,6 +130,51 @@ EOF
 case "$agent_id" in
     *[!A-Za-z0-9_-]*) exit 0 ;;
 esac
+
+# 沒有 Write 工具的 agent_type 直接不攔（見檔頭 CC_HANDOFF_SUBAGENT_SKIP_TYPES）：
+# 攔了它也寫不出交接檔，只是白白損失一次工具呼叫，比不攔更糟。不 deny、也不寫
+# 狀態檔——沒發過指示就沒有「已發過」可記。
+#
+# 位置：排在 agent_id 判定與消毒之後、狀態檔判定之前。
+#   - 不能更前面：主 agent 的呼叫沒有 agent_id，那條早退更便宜也更常走。
+#   - 不該更後面：要在付出「掃整個 transcript 算 token」的成本之前就退出。
+#
+# 比對用 for + set -f 而不是 `case " $SKIP_TYPES " in *" $agent_type "*)`：
+# case 的 pattern 位置會讓兩邊的 glob 字元都生效，`Explore*` 或 payload 送個
+# `*` 進來都會誤命中。這裡要的是**整個 token 字面相等**（大小寫敏感即可：實測
+# agent_type 就是 subagent_type 的字面，`general-purpose` 精確吻合），
+# `Explorer` 這種多一個字元的必須不命中。
+# set -f 是防 SKIP_TYPES 裡萬一有 glob 字元時被 pathname expansion 展開成檔名。
+if [ -n "$agent_type" ]; then
+    set -f
+    for _skip in $SKIP_TYPES; do
+        [ "$agent_type" = "$_skip" ] && exit 0
+    done
+    set +f
+fi
+
+# 同一條早退路徑的第二個理由：plan mode。
+# plan mode 底下寫檔不是全面禁止，是**白名單制**（binary 反查，2.1.223；
+# 用 `rg -a --fixed-strings -o '<字串>' <CLI binary>` 可自行重跑驗證）。
+#   阻擋訊息：Cannot write to <path> while in plan mode
+#   白名單原文只有這幾類：
+#     Plan files for current session are allowed for writing
+#     Workflow script files for current session are allowed for writing
+#     Scratchpad files for current session are allowed for writing
+#     Job tmp/ subtree for current session ...
+# 我們的交接檔寫在 $STATE_DIR（預設 ~/.claude/handoff-state/），**不在任何一條
+# 白名單裡** → plan mode 下必定被擋。症狀與上面的 Explore / Plan 完全相同：
+# deny 取消了一次工具呼叫，然後叫 sub agent 去寫一個它寫不了的檔，結果什麼都
+# 沒留下，比不攔更糟。
+#
+# 而且這條比 agent_type 那條常見得多：sub agent 繼承主 session 的 permission
+# mode，所以只要使用者在 plan mode 下派工，**任何** agent_type 都會中招，
+# 包括 general-purpose。
+#
+# 精確相等，不做 substring：合法值枚舉是
+# "default" / "acceptEdits" / "bypassPermissions" / "plan"（另有實測到的 "auto"），
+# 只有 "plan" 這一個要跳過。欄位不存在時 perm_mode 是空字串，照常往下走。
+[ "$perm_mode" = "plan" ] && exit 0
 
 state="$STATE_DIR/sa-$agent_id"
 handoff_file="$STATE_DIR/subagent-handoff-$agent_id.md"
@@ -152,8 +234,10 @@ mkdir -p "$STATE_DIR" 2>/dev/null || exit 0
 printf '%s\n' "${agent_type:-unknown}" > "$state" 2>/dev/null || exit 0
 
 # 註：續作的 sub agent 是新的 agent_id，若它也超標會寫到另一個
-# subagent-handoff-<新 id>.md。每一代的 SubagentStop 都會報出自己那一份，
-# 接力鏈不會斷；但舊的交接檔不會被合併或刪除，靠 STATE_DIR 的 7 天清掃收尾。
+# subagent-handoff-<新 id>.md。接力鏈靠的是每一代 sub agent 各自在最終回覆裡
+# 報出自己那份交接檔的路徑——**不是** SubagentStop（那支現在只清 state、不吐
+# 任何 stdout，理由見 subagent-stop.sh 檔頭的對照實驗）。
+# 舊的交接檔不會被合併或刪除，靠 STATE_DIR 的 7 天清掃收尾。
 jq -n --arg f "$handoff_file" --argjson used "$used" --argjson threshold "$THRESHOLD" '
 {
   hookSpecificOutput: {

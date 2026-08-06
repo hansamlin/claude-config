@@ -311,6 +311,67 @@ echo "── 13. 輸出為合法 JSON"
 check "觸發時輸出可被 jq 解析" "hookSpecificOutput" \
     "$(run sess-12 "$TMP/t4.jsonl" | jq -r 'keys | join(",")')"
 
+echo "── 13b. session_id 消毒：不是純識別字就不可拼進路徑"
+# session_id 會被拼進 `nags-$session_id` 並**寫檔**，reset.sh 再拿同一個值去
+# `rm -f`。實務上它一律是 UUID，但「實務上長這樣」不是防禦——agent_id 早就有
+# 白名單，這裡沒有，是防禦深度的不對稱。
+make_transcript 310000 "" "$TMP/t13b.jsonl"
+before13b=$(ls -A "$CC_HANDOFF_STATE_DIR" 2>/dev/null | sort)
+out13b=$(run '../../etc/evil' "$TMP/t13b.jsonl" 2>&1)
+after13b=$(ls -A "$CC_HANDOFF_STATE_DIR" 2>/dev/null | sort)
+check "含 ../ 的 session_id → 靜默放行（連 systemMessage 都不給）" EMPTY "$out13b"
+check "STATE_DIR 內容完全沒變（一個檔都不可寫）" EMPTY \
+    "$([ "$before13b" = "$after13b" ] && : || printf 'before=[%s] after=[%s]' "$before13b" "$after13b")"
+check "沒有把 nags- 檔寫到 STATE_DIR 之外" EMPTY \
+    "$(find "$TMP" -name 'nags-*' ! -path "$CC_HANDOFF_STATE_DIR/*" 2>/dev/null)"
+# 真的解析得成功的穿越路徑（中間段必須是存在的目錄，理由見 13c 的長註解）：
+#   $STATE_DIR/nags-d/../../pwned.txt  →  $TMP/pwned.txt
+mkdir -p "$CC_HANDOFF_STATE_DIR/nags-d"
+run 'd/../../pwned.txt' "$TMP/t13b.jsonl" >/dev/null 2>&1
+check "會穿越的 session_id 不可在 STATE_DIR 之外建檔" EMPTY \
+    "$(ls "$TMP/pwned.txt" 2>/dev/null)"
+# 其他非白名單字元同樣要擋（空白、$、/）
+check "含空白的 session_id → 靜默放行" EMPTY "$(run 'sess x' "$TMP/t13b.jsonl" 2>&1)"
+check "含 / 的 session_id → 靜默放行" EMPTY "$(run 'a/b' "$TMP/t13b.jsonl" 2>&1)"
+# 正常的 UUID 形態必須不被誤殺
+check "正常 UUID session_id → 照常注入指示" "先不要執行" \
+    "$(ctx "$(run '0f9a1c2d-3e4b-5a6f-8901-abcdef012345' "$TMP/t13b.jsonl")")"
+
+echo "── 13c. reset.sh：DISABLE 開關與 session_id 消毒"
+# 2.2.1 之前四支腳本只有 reset.sh 漏了 CC_HANDOFF_DISABLE，
+# 「完全停用」之下 PostCompact 仍會刪 nags-*
+mkdir -p "$CC_HANDOFF_STATE_DIR"
+printf '2' > "$CC_HANDOFF_STATE_DIR/nags-sess-dis"
+jq -n '{session_id:"sess-dis", hook_event_name:"PostCompact", trigger:"manual"}' \
+    | CC_HANDOFF_DISABLE=1 bash "$RESET"
+check "DISABLE=1 → 不可清狀態" "2" "$(cat "$CC_HANDOFF_STATE_DIR/nags-sess-dis" 2>/dev/null)"
+jq -n '{session_id:"sess-dis", hook_event_name:"PostCompact", trigger:"manual"}' | bash "$RESET"
+check "未停用 → 照常清掉（證明上一條不是因為 reset 本來就沒作用）" EMPTY \
+    "$(ls "$CC_HANDOFF_STATE_DIR/nags-sess-dis" 2>/dev/null)"
+
+# rm -f 是整個 plugin 唯一會刪檔的地方，風險最高。
+#
+# 這裡刻意造一個**真的會解析成功**的穿越路徑，而不是隨便丟個 "../../etc/evil"：
+# `rm -f "$STATE_DIR/nags-../../etc/evil"` 中間那段 `nags-..` 不是目錄，路徑解析
+# 不到、rm -f 靜默成功、STATE_DIR 也沒變——那樣的斷言不論有沒有消毒都會綠，
+# 是 vacuous test。要讓穿越真的發生，中間必須是存在的目錄：
+#   session_id = "d/../../victim.txt"
+#   → $STATE_DIR/nags-d/../../victim.txt  →  $TMP/victim.txt
+# 也就是 STATE_DIR 之外的檔案會被刪掉。
+mkdir -p "$CC_HANDOFF_STATE_DIR/nags-d"
+printf 'do-not-delete' > "$TMP/victim.txt"
+out13c=$(jq -n '{session_id:"d/../../victim.txt", hook_event_name:"PostCompact"}' \
+    | bash "$RESET" 2>&1)
+check "reset 收到會穿越的 session_id → 靜默" EMPTY "$out13c"
+check "STATE_DIR 之外的檔案沒有被刪掉" "do-not-delete" "$(cat "$TMP/victim.txt" 2>/dev/null)"
+# 證明上面那條不是因為 rm 本來就構不到：拿掉穿越、只留合法 id，reset 必須真的刪得動
+printf '1' > "$CC_HANDOFF_STATE_DIR/nags-real"
+jq -n '{session_id:"nags-real-probe", hook_event_name:"PostCompact"}' | bash "$RESET"
+printf '1' > "$CC_HANDOFF_STATE_DIR/nags-real"
+jq -n '{session_id:"real", hook_event_name:"PostCompact"}' | bash "$RESET"
+check "合法 session_id → reset 確實刪得動（證明上一條非 vacuous）" EMPTY \
+    "$(ls "$CC_HANDOFF_STATE_DIR/nags-real" 2>/dev/null)"
+
 echo "── 14. 頂層腳本維持 POSIX sh 相容"
 # install.sh / pull.sh 是使用者手動執行的腳本。有人打 `sh install.sh` 時，
 # bash 是「逐段剖析、逐段執行」——bashism 造成的 syntax error 會等到前面

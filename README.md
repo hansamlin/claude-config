@@ -87,7 +87,7 @@ Claude Code 的 hook payload **不含任何 token 欄位**（只有 statusline �
 
 1. 當下用量 < 門檻 → 靜默放行
 2. 當下用量 ≥ 門檻 → 注入 `additionalContext`，要 Claude 先跑 `handoff` skill 把進度寫進記憶、告訴你換 session，並**不要動你這則訊息交派的工作**；同時用 `systemMessage` 讓你也看到
-3. transcript 尾端查得到 `handoff` skill 真的被呼叫過 → 收手，只留一行提醒
+3. transcript 尾端查得到 `handoff` skill 真的被呼叫過 → 不再催告，改用 `decision: "block"` 硬中斷後續的 prompt（交接完就該開新 session，繼續做下去 context 只會再長）
 4. 催了 `CC_HANDOFF_MAX_NAGS` 次仍沒交接 → 當你是刻意要繼續用，降級為不打斷的提醒
 
 第 3 點的判準是「transcript 說 handoff 跑過了」而不是「我催過了」。`additionalContext` 只是注入指示，沒有任何機制保證 Claude 一定照做；催一次就記帳收手的話，模型忽略一次，這個 session 就再也不會交接，而且完全靜默。掃描只看尾端 `CC_HANDOFF_LOOKBACK` 筆——compact 之後 context 會塌回去，先前那次 handoff 早就過期，掃全檔會讓舊記錄永遠壓住後續觸發。sidechain 裡的 handoff 不算數，那是 subagent 的事。
@@ -136,13 +136,65 @@ sub agent 的生命週期裡沒有「使用者送出訊息」可攔，`Stop` 類
 2. 有 `agent_id` → 推導 sub agent 專屬 transcript，算最後一筆 assistant 的 usage 總和，未達門檻就放行
 3. 達門檻 → `permissionDecision: "deny"`，用 `permissionDecisionReason` 告訴這個 sub agent：停止原本的工作、把交接內容寫進 `$STATE_DIR/subagent-handoff-<agent_id>.md`、最終回覆只回報「沒做完 + 交接檔路徑 + 請主 agent 以相同 agent_type/模型重派」
 
-`PreToolUse` **沒有** `additionalContext` 這種「不擋、只注入」的管道（那是 `UserPromptSubmit` 才有的），deny 的 reason 是唯一能在 sub agent 迴圈中途對它下指示、而且模型看得到的通道。代價是那次工具呼叫會被取消，所以 reason 必須明講「原本的工作不用做了」，否則模型會以為只是這一步被擋、換個工具再試。
+**寫不出交接檔的情境一律不攔**——deny 的 reason 要求的是「用 `Write` 把交接內容寫進交接檔」，對一個根本寫不了檔的 sub agent 發這道指令，等於白白吃掉一次工具呼叫又什麼都沒留下，**比不攔更糟**。目前有兩條互相獨立的跳過條件：
+
+- **agent_type 的工具集裡沒有 `Write`**。內建的 `Explore` 與 `Plan` 排除了 `Edit / Write / NotebookEdit`。清單用 `CC_HANDOFF_SUBAGENT_SKIP_TYPES` 控制（空白分隔，預設 `Explore Plan`）；做成可覆寫是因為使用者自訂 agent 遲早會讓寫死的清單腐爛
+- **permission mode 是 `plan`**。plan mode 下寫檔不是全面禁止而是**白名單制**，白名單只有 plan 檔、workflow script、scratchpad、job tmp 這幾類（binary 原文：`Plan files for current session are allowed for writing`、`Workflow script files for current session are allowed for writing`、`Scratchpad files for current session are allowed for writing`、`Job tmp/ subtree for current bg session is allowed for writing`）。交接檔寫的是 `$STATE_DIR`，不在任何一條裡，必定收到 `Cannot write to <path> while in plan mode`。判定直接讀 `PreToolUse` payload 的 `permission_mode`（合法值 `"default","acceptEdits","bypassPermissions","plan"`）
+
+**plan mode 這條比 agent_type 那條常見得多**：sub agent 繼承主 session 的 permission mode，所以只要你在 plan mode 下派工，**任何 agent_type 都會中招**，包含 `general-purpose`。兩條走的是同一條 skip 路徑——不 deny、也不寫 state 檔（沒發過 deny 就不該佔用「只 deny 一次」的配額）。
+
+`PreToolUse` 其實**也有** `additionalContext` 這條「不擋、只注入」的管道，schema 明列在 `hookSpecificOutput` 裡：
+
+```
+hookEventName:E.literal("PreToolUse"),permissionDecision:...,permissionDecisionReason:E.string().optional(),updatedInput:...,additionalContext:E.string().optional()
+```
+
+消費端對它的處理與權限決定無關：不給 `permissionDecision`、只給 `additionalContext`，工具照常執行，文字照樣進模型。這裡刻意選 `deny` 而不是「只注入」，要的是「**立刻停止原本的工作**」那份語意強度——deny 以「這次工具呼叫被擋下」的形式呈現，模型難以忽略。代價是損失一次工具呼叫，所以 reason 必須明講「原本的工作不用做了」，否則模型會以為只是這一步被擋、換個工具再試。日後若想省掉那次工具呼叫，`allow` + `additionalContext` 是有 schema 佐證的實驗方向（記帳仍要保留，否則每次工具呼叫都會再注入一遍）。
 
 **只 deny 一次**，以 `$STATE_DIR/sa-<agent_id>` 記帳。deny 是無差別的——擋的是「這次工具呼叫」而不是「某類工具」。持續 deny 的話，sub agent 連寫交接檔要用的 `Write` 都會被擋，直接死鎖。記帳一定要在 deny **之前**且失敗就整個放棄（fail open）：整套保證都建立在那個檔存在上，先 deny 後記帳等於把死鎖賭在檔案系統上。
 
-`SubagentStop` 是這套機制真正的保險。deny 的 reason 只是寫給模型看的字串，sub agent 會不會照著回報「我沒做完」純粹是順從性；它完全可能把半成品包裝成成品。`SubagentStop` 讀的是 `sa-<agent_id>` 這個**事實**，並用 `hookSpecificOutput.additionalContext`（會出現在父對話，主 agent 看得到）直說：任務尚未完成、交接檔在哪、交接檔到底有沒有被寫出來、請以相同 `agent_type` 與相同模型等級重派並要求新 agent 先讀該檔。清掉 `sa-*` 但**絕不刪交接檔**——那是主 agent 接下來唯一的輸入。
+`SubagentStop` 的唯一作用是**清掉 `sa-<agent_id>`**，而且**在任何路徑下 stdout 與 stderr 都必須是空的、exit code 必須是 0**。清掉 `sa-*` 但**絕不刪交接檔**——那是主 agent 接下來唯一的輸入。
 
-不用 `decision: "block"`：block 的語意是「不准結束、繼續做」，但這個 sub agent 就是因為 context 滿了才被攔下來的，逼它繼續只會更糟。要接手的是**新的** sub agent。
+2.2.0 曾經讓這支 hook 輸出 `hookSpecificOutput.additionalContext` 去通知主 agent，線上實測是災難：已經結束的 sub agent 被**續跑**；而這支 hook 又剛好把 `sa-<agent_id>` 刪了，所以它下一次工具呼叫時「只 deny 一次」的記帳不存在 → 重新 deny → 再結束 → 再被續跑，滾成無限迴圈。對照實驗（唯一變因是 stdout，`rm` 兩版都保留）：
+
+| stdout | SubagentStop 次數 | deny 次數 | 結果 |
+| --- | --- | --- | --- |
+| 有 | ~30 | **32** | 跑不完，sub agent 自己在 transcript 最後寫下「System failure: Context loop infinite」 |
+| 無 | 每次派工 1 | **1** | 主 agent 正常收到回報並重派，整輪乾淨結束 |
+
+元凶是 hook 的輸出本身，不是 `rm`（`rm` 只是放大器）。
+
+**根因不是「harness 不認得那個形狀」，而是我們選了一個語意本來就等於「繼續跑」的欄位。** SubagentStop 的 `additionalContext` 是合法欄位，schema 上的 `.describe()` 寫得非常清楚：
+
+```
+non-error feedback delivered to the subagent; the subagent continues so it can act on it
+```
+
+「delivered to the **subagent**」——那段文字是注回 sub agent 自己，不是父對話。這順帶解釋了原版迴圈裡「sub agent 自己去呼叫 `Agent` 工具派下一層」的怪象：它讀到了本來寫給主 agent 看的「請以相同 `agent_type` 重新派一個 sub agent」，於是就照做了；拿掉 stdout 之後那條 trace 裡一次 `Agent` 呼叫都沒有。
+
+更關鍵的是**續跑的判定條件是「有沒有輸出」，不是「輸出的形狀」**。消費端：
+
+```
+if(U.stdout&&U.stdout.trim()||U.stderr&&U.stderr.trim())H=!0
+```
+
+外加 `U.type==="hook_non_blocking_error"`（hook 非零 exit）也會設同一個旗標。所以：換成 `systemMessage` 一樣會續跑（換欄位、換措辭都繞不過去）、**寫到 stderr 也算**、hook 自己 crash 也算。這就是為什麼規格是「stdout 與 stderr 全空、exit 0」而不只是「不要輸出 JSON」。
+
+> 上面這些引文都來自本機執行中的 CLI 建置產物（`~/.local/share/claude/versions/<version>`），用 `rg -a --fixed-strings -o '<字串>' <binary>` 就能自己重跑，**秒級**（慢的是複雜 regex 與 `strings` 全檔掃）。這比攔 payload 更完整：payload 只看得到實際發生過的，schema 看得到所有可能的。
+
+**「通知主 agent」不需要這支 hook。** 同一次實驗證明，拿掉 stdout 之後主 agent 從 sub agent 自己的最終回覆就完整拿到了：因 context 達上限中止、任務未完成、`agentId`、`subagent_tokens`、交接檔內容摘要，而且**主動**照著 deny 訊息的指示重派了同 `agent_type` / 同模型等級的續作 agent 去讀交接檔。deny 的 reason 已經把該說的話說完了。
+
+⚠️ 未來若要加回「機械保證的旁路通知」，**不可以**走 `SubagentStop`——它任何形式的輸出都等於「讓 sub agent 繼續跑」，換欄位、換措辭都繞不過去（理由見上）。對症的是 `Agent` 工具的 `PostToolUse`：schema 裡有
+
+```
+updatedToolOutput:E.unknown().describe("Replaces the tool output before it is sent to the model").optional()
+```
+
+它取代的正是 sub agent 回傳給主 agent 的那段內容，可以把「這個 sub agent 沒做完 + 交接檔路徑」硬塞進主 agent 一定會讀到的位置，把通知從模型順從性升級成機械保證。PostToolUse 的 matcher 比對的是 `tool_name`，而實測 payload 顯示派工工具的 `tool_name` 是 `Agent`（不是 `Task`），所以可以用 `"matcher": "Agent"` 精準只掛在派工上。另外事件表裡還有 `SubagentStart`（一樣帶 `additionalContext`），那是「對即將開始的 sub agent 說話」的通道——日後要做「續作 agent 必須先讀交接檔」的機械保證，那才是對的事件。
+
+這些都**還沒線上實測**，而且改 `hooks.json` 要重啟 session 才生效，所以這一版不做。
+
+也不用 `decision: "block"`：block 的語意是「不准結束、繼續做」，但這個 sub agent 就是因為 context 滿了才被攔下來的，逼它繼續只會更糟。要接手的是**新的** sub agent。
 
 幾個刻意不做的事：
 
@@ -160,9 +212,10 @@ sub agent 的生命週期裡沒有「使用者送出訊息」可攔，`Stop` 類
 | --- | --- | --- |
 | `CC_HANDOFF_THRESHOLD` | `300000` | 主 session 的觸發門檻（token）。1M context window 的 30% |
 | `CC_HANDOFF_SUBAGENT_THRESHOLD` | `300000` | sub agent 的觸發門檻。與主 session 分開，因為兩者調整的動機不同（一個是使用者體感，一個是任務切段粒度） |
+| `CC_HANDOFF_SUBAGENT_SKIP_TYPES` | `Explore Plan` | 這些 `agent_type` 的 sub agent 一律不攔（空白分隔）。預設兩個內建 agent 的工具集沒有 `Write`，攔了也寫不出交接檔。注意 plan mode 是**另一條獨立的**跳過條件，不受這個變數控制（清空它也不會讓 plan mode 下的派工被攔） |
 | `CC_HANDOFF_MAX_NAGS` | `3` | 最多主動要求交接幾次，超過就只提醒 |
 | `CC_HANDOFF_LOOKBACK` | `300` | 往回掃幾筆 transcript 找 handoff 執行記錄 |
-| `CC_HANDOFF_DISABLE` | — | 設 `1` 完全停用 |
+| `CC_HANDOFF_DISABLE` | — | 設 `1` 完全停用。四支 hook 都吃這個開關（包含 `PostCompact` 的清理——停用狀態下它連 `nags-*` 都不會刪） |
 | `CC_HANDOFF_TRACE` | — | 設成檔案路徑，把收到的 hook payload 附加寫入，除錯用 |
 | `CC_HANDOFF_STATE_DIR` | `~/.claude/handoff-state` | 狀態目錄，測試用來隔離 |
 
@@ -189,9 +242,13 @@ bash plugins/context-handoff/scripts/check.test.sh
 bash plugins/context-handoff/scripts/subagent-check.test.sh
 ```
 
-`subagent-check.test.sh` 有 17 組案例、52 條斷言，涵蓋主 agent 工具呼叫必須零副作用、未達門檻靜默、達門檻 deny 且 reason 含交接檔絕對路徑與重派語意、**第二次工具呼叫必須放行的死鎖回歸**、寫交接檔本身不可被擋、`transcript_path` 給主檔或給專屬檔都要算得到量、推導不到檔案要靜默、並發 `agent_id` 狀態互不干擾、`SubagentStop` 的通知與清理（交接檔不可刪）、沒寫出交接檔要警告、`agent_id` 路徑注入防護與停用開關。
+`subagent-check.test.sh` 有 25 組案例、75 條斷言，涵蓋主 agent 工具呼叫必須零副作用、未達門檻靜默、達門檻 deny 且 reason 含交接檔絕對路徑與重派語意、**第二次工具呼叫必須放行的死鎖回歸**、寫交接檔本身不可被擋、`transcript_path` 給主檔或給專屬檔都要算得到量、推導不到檔案要靜默、並發 `agent_id` 狀態互不干擾、**`SubagentStop` 在所有路徑下 stdout 與 stderr 都必須為空、exit code 必須是 0**（交接檔不可刪、state 一定要清）、**兩條 skip 條件的正反向**（清單命中就不攔、比對必須是整個 token 相等而不能寫成 substring/prefix、`CC_HANDOFF_SUBAGENT_SKIP_TYPES` 必須真的可覆寫；`permission_mode=plan` 不攔、其餘 mode 一律照常 deny）、`agent_id` 路徑注入防護與停用開關，以及一組**跨檔回歸**：讓 `subagent-check.sh` 真的寫出 `sa-<agent_id>`，再跑 `subagent-stop.sh`，斷言 stop 無輸出且 state 已移除。最後這組是針對「52 條全綠卻仍漏掉無限迴圈」補的——那個 bug 出在兩支腳本的互動上，單獨測任一支都看不到。
 
-`check.test.sh` 有 17 組案例、70 條斷言，涵蓋 subagent 排除（且 `--agent` 主 session 不可誤殺）、sidechain 過濾、未達門檻靜默、達門檻注入指示、模型忽略時繼續催、催滿上限降級、handoff 跑過就收手、compact 邊界重算、bg session 必須觸發的回歸、PostCompact reset、停用開關與輸出合法性，以及**這則 prompt 本身就是 handoff 呼叫時不再重複催**（含句尾 `/handoff`、純文字整則相等、談論 handoff 的句子不可誤命中）與**已交接後硬中斷**（含背景任務通知不可被 block 的例外）。全程在 `mktemp` 目錄裡用 `CC_HANDOFF_STATE_DIR` 隔離，不會動到真實狀態。
+**「stdout 要空」這條規格漏掉 stderr 的代價，是用 mutation 量出來的**：把 `subagent-stop.sh` 的 `exec >/dev/null 2>&1` 改成只塞 stdout 的 `exec >/dev/null`、再讓腳本往 stderr 寫一行字，現行測試 FAIL=12；同一個 mutation、把斷言裡的 `2>&1` 全部拿掉（＝舊測試的形態）只 FAIL=1，而那唯一一條還是新加的「`HOME` 與 `STATE_DIR` 都沒設定」那組（它直接用 `env` 呼叫、不經 helper）。也就是說舊的斷言**一條都抓不到**這種洩漏——同一個教訓的第二次應驗：斷言只覆蓋你寫進去的東西，規格漏了一半時全綠沒有意義。
+
+同一輪 mutation 還抓出一個原本沒想到的洞：`set -u` 下 `$HOME` 未設定會**同時**噴 stderr 並以 rc=1 結束，而「非零 exit 也算輸出」是續跑判定裡獨立的一條路徑——所以光加 `exec` 不夠（只加 `exec`、保留 `$HOME`：stderr 確實空了，但 rc=1，sub agent 照樣被續跑），`$HOME` 也必須寫成 `${HOME:-}`。
+
+`check.test.sh` 有 19 組案例、82 條斷言，涵蓋 subagent 排除（且 `--agent` 主 session 不可誤殺）、sidechain 過濾、未達門檻靜默、達門檻注入指示、模型忽略時繼續催、催滿上限降級、handoff 跑過就收手、compact 邊界重算、bg session 必須觸發的回歸、PostCompact reset、停用開關與輸出合法性，以及**這則 prompt 本身就是 handoff 呼叫時不再重複催**（含句尾 `/handoff`、純文字整則相等、談論 handoff 的句子不可誤命中）與**已交接後硬中斷**（含背景任務通知不可被 block 的例外）。全程在 `mktemp` 目錄裡用 `CC_HANDOFF_STATE_DIR` 隔離，不會動到真實狀態。
 
 ### 已知限制
 
@@ -199,11 +256,14 @@ bash plugins/context-handoff/scripts/subagent-check.test.sh
 - **compact 後第一則訊息一律放行**：邊界之後還沒有 usage 可讀，寧可漏一次也不要用陳舊數字誤觸發。下一輪就會恢復正常判斷。
 - **注入的是指示不是強制**：`additionalContext` 讓 Claude 看到並據此行動，但沒有機制能保證它一定照做。Hook 無法直接呼叫工具或 skill，這是 hooks 的設計邊界。所以才用「transcript 查得到 handoff 執行記錄」當收手條件，而不是「我催過了」。
 - `trigger: "auto"`（自動壓縮）未實測，只驗過 `manual`。reset script 不讀 `trigger` 欄位，行為應該一致；但 compact 邊界的偵測靠頂層 `isCompactSummary`，本機能找到的 compact transcript 全是 `manual`，auto 壓縮是否寫入相同標記沒有樣本可驗。若 auto 用了別的形狀，那條路徑會退回「用陳舊數字誤觸發」——不會比修正前更糟，但也不會被擋下。
-- **sub agent 那條鏈上有三個環節只是模型順從性**：(a) sub agent 收到 deny reason 後有沒有真的去寫交接檔（`SubagentStop` 會查檔案在不在，至少能讓主 agent 知道沒寫）、(b) 交接檔內容夠不夠讓人接手、(c) **主 agent 看到 `additionalContext` 之後有沒有真的照著重派**——最後這個是整條鏈最弱的一環，`additionalContext` 是給主 agent 的指示，不是強制
+- **主 agent 得知 sub agent 中止，靠的是 sub agent 自己的最終回覆——沒有機械保證的旁路通知**。`SubagentStop` **不能**拿來做這件事（它的任何輸出——stdout、stderr、非零 exit——都等於叫已結束的 sub agent 繼續跑，滾成無限 deny 迴圈，見上）。實測上這條通道是夠用的：主 agent 收得到中止原因、`agentId`、token 數，也會主動重派續作 agent。但它終究是模型順從性，不是機制；有 schema 佐證、值得試的機械化候選是 `Agent` 的 `PostToolUse` + `updatedToolOutput`，尚未實測。
+- **sub agent 的最後一輪沒有工具呼叫**（產生最終回覆的那一輪），所以它若剛好在最後一輪才越過門檻，`PreToolUse` 永遠攔不到，半成品仍會被當成成果回報。這是把攔截點掛在工具呼叫上的結構性代價，無解。
+- **sub agent 那條鏈上有三個環節只是模型順從性**：(a) sub agent 收到 deny reason 後有沒有真的去寫交接檔、(b) 交接檔內容夠不夠讓人接手、(c) **它有沒有在最終回覆裡如實說「我沒做完」**——(a) 和 (c) 都不再有 hook 可以兜底，2.2.0 那層兜底已被證實有害而移除
 - **`PreToolUse` payload 的 `transcript_path` 在 sub agent 內指向主檔還是專屬檔未實測**，所以兩種形狀都涵蓋；兩個候選都不存在就靜默退出。這條路徑的失敗模式是「永遠不觸發且完全靜默」，要確認它有在跑就掛 `CC_HANDOFF_TRACE`
 - **payload 的 `agent_id` 是否等於檔名裡的 `<agent_id>` 未直接實測**：只驗過 transcript 檔內 `agentId` 欄位與檔名一致（`agent-a12a9e71e33f24f4f.jsonl` ↔ `agentId: a12a9e71e33f24f4f`）
-- **deny 的 `permissionDecisionReason` 會不會被送到 sub agent 的模型面前未實測**。已實測的是「主 agent 收到 deny 時看得到 reason」。若 sub agent 只收到「工具呼叫被取消」而看不到理由，它不會去寫交接檔——但 `SubagentStop` 那條保險仍然成立（狀態檔是機制寫的），主 agent 會收到「⚠️ 交接檔不存在」的警告並照樣重派，只是接力棒是空的
-- **`SubagentStop` 沒觸發的話 `sa-<agent_id>` 會殘留**。殘留無害（deny 已經發過，最多是少一次通知、不會死鎖），但也不保證會被清掉：`check.sh` 那支 7 天 `find` 掛在「主 session 已達門檻」的路徑上，主 session 從沒破過門檻的機器上等於不會跑
+- **實測上 sub agent 照著 deny 的 `permissionDecisionReason` 做了**（收到 deny 後寫出交接檔、最終回覆報「未完成、請重派」，主 agent 據此重派）。但這條路一旦失效就**沒有備援**了——2.2.0 靠 `SubagentStop` 兜底的設計已被證實會造成無限迴圈而移除，若哪天 sub agent 只收到「工具呼叫被取消」而看不到理由，主 agent 就無從得知它是被中止的
+- **狀態檔會殘留，而且清掃的觸發路徑比想像中窄**。`SubagentStop` 沒觸發的話 `sa-<agent_id>` 會留下（無害：deny 已經發過，不會死鎖），**交接檔 `subagent-handoff-*.md` 也一樣會留**——而那是有內容的檔案，可能好幾 KB，比 1 byte 的 `nags-*` 值得在意。唯一的清掃是 `check.sh` 裡那支 7 天 `find`，它排在「未達門檻早退」「`/handoff` 逃生口」「已交接就 block」三個 early exit **之後**，所以只在「已達門檻 + 這則不是 handoff + 尚未交接」這條窄路徑上跑：主 session 從沒破過門檻的機器上等於不會跑，而**一旦這個 session 交接過，清掃就再也不會跑**
+- **交接過的 session 被硬中斷之後有四條逃生口**：再打一次 `/handoff`（或純文字 `handoff` / `交接`）、`/compact`（compact 邊界之後那次交接就過期了）、`CC_HANDOFF_DISABLE=1`，以及第四條——訊息以 `<tag>` 尖角標籤開頭時會被判定成系統注入（為了不 erase 背景任務完成通知），繞過 block 只拿到提醒。真人打 `<x>繼續做這件事` 就能鑽過去。這是刻意保留的溫和後門（真人幾乎不會這樣開頭），不打算收窄
 - **改了 hook 行為記得 bump `plugin.json` 的 `version`**：plugin 快取是按版本號分目錄的（`~/.claude/plugins/cache/sam-tools/context-handoff/<version>/`），版本沒動的話 `/plugin marketplace update` 之後可能仍在跑舊碼——又是一個「裝好了、沒錯誤、行為是舊的」情境。
 
 ## tsgo-lsp
