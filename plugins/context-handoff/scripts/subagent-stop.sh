@@ -1,89 +1,112 @@
 #!/usr/bin/env bash
-# SubagentStop hook：sub agent 收工時，如果它是「因為 context 達門檻被要求交接」
-# 才收工的，就對**主 agent** 明說任務沒完成、交接檔在哪、要怎麼重派。
+# SubagentStop hook：唯一的作用是把 subagent-check.sh 落地的 `sa-<agent_id>`
+# 狀態檔清掉。除此之外什麼都不做——而且**在任何路徑下 stdout 與 stderr 都必須
+# 是空的，exit code 必須是 0**。
 #
-# 為什麼需要這一支（subagent-check.sh 明明已經下過指示了）：
-#   那道指示只是寫給模型看的字串，sub agent 會不會照著回報「我沒做完」純粹是
-#   模型順從性。它完全可能把半成品寫得像成品交出去，主 agent 就會採信。
-#   這支 hook 讀的是狀態檔——「超標過」是 subagent-check.sh 落地的事實，
-#   不是模型的自述——所以它是這整套機制真正的保險，也是唯一能讓主 agent
-#   在 sub agent 不合作時仍然知道實情的管道。
+# 這條規格為什麼是這三件事全都要（binary 反查，Claude Code 2.1.223）：
+#   SubagentStop 的消費端判定長這樣：
+#     if (U.stdout && U.stdout.trim() || U.stderr && U.stderr.trim()) H = !0;
+#     if (U.type === "hook_non_blocking_error") ... H = !0;
+#   `H` 就是「讓 sub agent 繼續跑」。判定條件是**有沒有輸出**，不是輸出的形狀：
+#   stderr 一樣算、非零 exit（走 hook_non_blocking_error）一樣算。
+#   所以「換個欄位、換個措辭」不會有幫助——`systemMessage` 會不會同樣造成續跑，
+#   這題已經結案：**會**。唯一安全的規格是「什麼都不輸出」。
+#   為此第一行就 `exec >/dev/null 2>&1`，把慣例變成結構保證（見下方）。
 #
-# 為什麼用 additionalContext 而不是 decision:"block"：
-#   block 的語意是「不准結束，繼續做」。但這個 sub agent 之所以被攔下來就是
-#   因為 context 已經滿了，逼它繼續只會更快撞牆、而且會把交接檔寫好之後
-#   累積的成果再賠進去。要接手的是**新的** sub agent，不是這一個。
-#   additionalContext 會出現在父對話裡（主 agent 看得到），正好是要下指示的對象。
+# 為什麼 2.2.0 會炸（線上缺陷，2.2.1 修正）：
+#   2.2.0 這支 hook 會輸出 `hookSpecificOutput.additionalContext`，想藉此通知
+#   主 agent「這個 sub agent 沒做完、去重派」。根因**不是**「harness 不認得這個
+#   形狀」——恰恰相反，harness 完全認得，而且它的規格語意就是「餵回 sub agent
+#   並讓它繼續跑」。schema 的 .describe() 原文：
+#     "non-error feedback delivered to the subagent; the subagent continues
+#      so it can act on it"
+#   也就是說我們**選錯了欄位**，不是形狀不對：想講話的對象是主 agent，用的卻是
+#   一個規格上就寫明「講給 sub agent 聽並讓它續跑」的通道。
+#   而這支 hook 又剛好把 `sa-<agent_id>` 刪掉了，於是被續跑的 sub agent 下一次
+#   工具呼叫時，subagent-check.sh 的「只 deny 一次」記帳不存在 → 重新 deny →
+#   再結束 → 再被續跑，滾成無限迴圈。
 #
-# 為什麼清掉 sa-<agent_id> 但絕不刪交接檔：
-#   狀態檔的用途只到「這一輪要不要通知主 agent」為止，留著只會在 agent_id
-#   萬一被重用時重複觸發。交接檔則是主 agent 接下來要餵給續作 sub agent 的
-#   唯一輸入，刪掉整套機制就白做了。
+#   對照實驗（唯一變因是 stdout，`rm -f "$state"` 兩版都保留）：
+#     有 stdout → SubagentStop 觸發約 30 次、deny **32 次**，整輪跑不完，
+#                 sub agent 自己在 transcript 最後寫下「System failure: Context loop infinite」。
+#     無 stdout → 每個 sub agent 各 1 次 SubagentStop、各 **1 次** deny，乾淨結束。
+#   所以元凶是輸出，不是 `rm`；`rm` 只是把迴圈放大。`rm` 必須保留（見下）。
+#
+#   附帶證實：原版迴圈裡那些「sub agent 自己去呼叫 Agent 工具派下一層」的怪象，
+#   也是同一個根因——additionalContext 被注回 **sub agent 自己**，而那段文字寫的是
+#   「請以相同的 agent_type 重新派一個 sub agent」，本來是要給主 agent 看的。
+#   拿掉 stdout 之後，exp1 的 trace 裡一次 `Agent` 呼叫都沒有。
+#
+# 為什麼「通知主 agent」不需要這支 hook：
+#   同一次對照實驗證明，這條通道本來就不必要。拿掉 stdout 之後，主 agent 從
+#   sub agent 自己的最終回覆就完整拿到了：因 context 達上限中止、任務未完成、
+#   agentId、subagent_tokens，以及交接檔的內容摘要；而且**主動**照著 deny 訊息的
+#   指示重派了同 agent_type / 同模型等級的續作 agent 去讀交接檔。
+#   subagent-check.sh 的 deny reason 已經把該說的話說完了，這裡再說一次沒有增益。
+#
+# ⚠️ 未來若要加回「機械保證的主 agent 通知」：
+#   **不可以**走 SubagentStop 的任何輸出——消費端只看「有沒有輸出」，換欄位、
+#   換措辭都繞不過（`systemMessage` 同樣會造成續跑，見上）。
+#   有 schema 佐證的候選有兩條，但**都還沒做過線上實測**：
+#     1. `Agent` 工具的 PostToolUse（sub agent 回到父對話那一刻）。它的
+#        `hookSpecificOutput` 帶 `updatedToolOutput`，.describe() 原文
+#        "Replaces the tool output before it is sent to the model"——語意正好
+#        可以取代 sub agent 回傳給主 agent 的內容。PostToolUse 的執行器帶
+#        agent context，matchQuery 是 tool_name，所以能用 `"matcher": "Agent"`
+#        精準掛上去，不會波及其他工具。
+#     2. `SubagentStart`（事件表裡有，帶 `additionalContext`）——那是「對即將
+#        開始的 sub agent 說話」的通道，方向與 1 相反，適合用來預先交代。
+#   兩條都必須先做一次線上實測才可採用；另外改 hooks.json 要重啟 session 才生效。
+#
+# 為什麼還是要清 sa-<agent_id>，又為什麼絕不刪交接檔：
+#   狀態檔的用途只到「這一次派工已經 deny 過了」為止，留著會在 agent_id 萬一被
+#   重用時吃掉新一輪的交接機會（而且 STATE_DIR 的 7 天清掃不一定跑得到）。
+#   交接檔則是主 agent 接下來要餵給續作 sub agent 的唯一輸入，刪掉整套機制就白做了。
 #
 # 可調環境變數：見 subagent-check.sh 檔頭，兩支共用同一組。
 
 set -uo pipefail
 
+# ⚠️ 必須是 set 之後的第一個指令，早於任何變數展開。
+# 「不輸出」在這支 hook 是正確性條件（見檔頭），不能只靠每一行都小心。已知的
+# 洩漏路徑至少兩條，而且都繞過人的注意力：
+#   1. 下面 `STATE_DIR=...$HOME/...` 在 HOME 未設定時，`set -u` 會噴
+#      "unbound variable" 到 stderr **並且**非零退出——續跑的兩個觸發條件同時滿足。
+#   2. `printf ... >> "$CC_HANDOFF_TRACE"` 若 TRACE 指到不可寫路徑，bash 會把
+#      重導向錯誤寫到 stderr。
+# 這一行把「stdout/stderr 全空」從慣例變成結構保證。
+# 不影響 trace：那行是 `>>` 到檔案，走的不是 stdout。
+exec >/dev/null 2>&1
+
 [ "${CC_HANDOFF_DISABLE:-0}" = "1" ] && exit 0
 
-STATE_DIR="${CC_HANDOFF_STATE_DIR:-$HOME/.claude/handoff-state}"
+# `${HOME:-}` 而不是 `$HOME`：`exec` 已經把 stderr 塞住，但 `set -u` 的 unbound
+# variable 還會讓腳本以非零狀態結束——而非零 exit 走 hook_non_blocking_error，
+# 一樣會讓 sub agent 續跑。三個條件（stdout / stderr / exit code）要一起守住。
+# HOME 沒設定時 STATE_DIR 會變成 "/.claude/handoff-state"，底下不會有狀態檔，
+# 下面的 `[ -e "$state" ] || exit 0` 自然收尾。
+STATE_DIR="${CC_HANDOFF_STATE_DIR:-${HOME:-}/.claude/handoff-state}"
 
 input=$(cat)
+# trace 寫的是檔案不是 stdout，與上面的「不可吐 stdout」不衝突。
 [ -n "${CC_HANDOFF_TRACE:-}" ] && printf '%s\n' "$input" >> "$CC_HANDOFF_TRACE"
 
-# 分隔字元與 subagent-check.sh 同理，用 \001 避開 IFS whitespace 吃掉空欄的問題
-agent_id=""; agent_type=""
-IFS=$'\001' read -r agent_id agent_type <<EOF
-$(printf '%s' "$input" | jq -r '[.agent_id // "", .agent_type // ""] | join("\u0001")' 2>/dev/null)
-EOF
+agent_id=$(printf '%s' "$input" | jq -r '.agent_id // ""' 2>/dev/null)
 
 [ -n "$agent_id" ] || exit 0
+
+# agent_id 會被拼進檔名，不是純識別字就當作沒收到——與其冒著把 ../ 拼進路徑的
+# 風險，不如放著讓 STATE_DIR 的定期清掃收尾。
 case "$agent_id" in
     *[!A-Za-z0-9_-]*) exit 0 ;;
 esac
 
 state="$STATE_DIR/sa-$agent_id"
-handoff_file="$STATE_DIR/subagent-handoff-$agent_id.md"
 
-# 沒有狀態檔＝這個 sub agent 從頭到尾沒超標，是正常收工。絕不能干擾——
-# 絕大多數 sub agent 都走這條路，這裡多說一句話就是對每一次派工的雜訊稅。
+# 沒有狀態檔＝這個 sub agent 從頭到尾沒超標，是正常收工。絕大多數派工走這條路，
+# 這裡連 rm 都不必發。
 [ -e "$state" ] || exit 0
 
-# agent_type 以 payload 為準，payload 沒有才退回 subagent-check.sh 當時記下來的。
-# 兩邊都沒有時不要編一個出來——寧可叫主 agent 自己回想，也不要給錯的等級。
-[ -n "$agent_type" ] || agent_type=$(cat "$state" 2>/dev/null)
-case "$agent_type" in
-    '' | unknown) agent_type="（payload 未提供，請沿用你原本指派的 agent_type）" ;;
-esac
-
-# 交接檔到底有沒有被寫出來，是唯一能機械查證「sub agent 有沒有照指示做」的點。
-# 沒寫出來的話主 agent 必須知道——不然它會拿著一個不存在的路徑去 briefing 續作者。
-if [ -f "$handoff_file" ]; then
-    written="交接檔已寫出。"
-else
-    written="⚠️ 交接檔不存在——該 sub agent 沒有照指示寫出來，重派時只能靠它的最終回覆重建 context。"
-fi
-
 rm -f "$state" 2>/dev/null
-
-jq -n --arg f "$handoff_file" --arg t "$agent_type" --arg w "$written" '
-{
-  hookSpecificOutput: {
-    hookEventName: "SubagentStop",
-    additionalContext: (
-      "【sub agent context 達上限，任務尚未完成】\n"
-      + "剛結束的這個 sub agent 是因為 context 用量達到門檻而被強制中止的，"
-      + "**不是因為任務做完了**。請不要把它這次的回傳當成任務成果，也不要據此判定驗收。\n"
-      + "- 交接檔：\($f)\n"
-      + "- \($w)\n"
-      + "- 原本的 agent_type：\($t)\n\n"
-      + "接下來請以**相同**的 agent_type（\($t)）與**相同**的模型等級重新派一個 sub agent，"
-      + "briefing 裡要明確要求它**先讀 \($f)**，再從交接檔的「進行中／下一步」續作。\n"
-      + "續作的 sub agent 若再次達到門檻，會再產生一份新的交接檔並再次由這個機制通知你；"
-      + "重複這個循環，直到某次 sub agent 是正常完成收工（不會再出現這則訊息）為止，"
-      + "才可以採信它的任務結果。"
-    )
-  }
-}'
 
 exit 0

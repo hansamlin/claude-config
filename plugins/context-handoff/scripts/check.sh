@@ -34,12 +34,24 @@ input=$(cat)
 [ -n "${CC_HANDOFF_TRACE:-}" ] && printf '%s\n' "$input" >> "$CC_HANDOFF_TRACE"
 jq_in() { printf '%s' "$input" | jq -r "$1" 2>/dev/null; }
 
-# subagent 也會收到 UserPromptSubmit，但它的 context 與主 session 無關，
-# 交接要等主 agent 接手才有意義。
+# sub agent 的 context 與主 session 無關，交接要等主 agent 接手才有意義。
+# 真正做到這件事的**不是**下面那行 agent_id guard，而是下方算 used 時的
+# `isSidechain != true` 過濾——sub agent 的訊息在主 transcript 裡全都是
+# isSidechain:true，濾掉之後剩下的就只有主線用量。那才是第一道也是唯一實際
+# 生效的防線（回歸測試見 check.test.sh「── 9. isSidechain 過濾」）。
 #
-# 只認 agent_id 不認 agent_type：文件寫 agent_id「present only when the hook
-# fires inside a subagent call」，而 `claude --agent foo` 啟動的**主** session
-# 帶的是 agent_type。連 agent_type 一起擋的話，那種 session 會永遠不觸發——
+# 下面這行 agent_id guard 是**零成本的防禦性 dead code**，保留無妨但不是防線：
+# 實測 + binary 反查（Claude Code 2.1.223）確認 UserPromptSubmit 的 payload
+# **永遠**不帶 agent_id——建構 payload 的 `Bm(t)` 沒有傳入 agent context 那個
+# 參數，agent_id 恆為 undefined。全部 trace 檔裡 UserPromptSubmit 帶 agent_id
+# 的次數是 **0**，而同一批 run 的 PreToolUse / SubagentStop 帶 agent_id 的有
+# 上百筆；trace 寫入排在這個 guard 之前，所以那個 0 不是採樣不足。
+#
+# 官方文件寫的 agent_id「present only when the hook fires inside a subagent
+# call」——對 PreToolUse 成立，對 UserPromptSubmit **不成立**。
+#
+# 只認 agent_id 不認 agent_type 的理由仍然有效：`claude --agent foo` 啟動的
+# **主** session 帶的是 agent_type，連它一起擋的話那種 session 會永遠不觸發，
 # 正是這個 plugin 原本 bg 排除那個 bug 的翻版。
 [ -n "$(jq_in '.agent_id // ""')" ] && exit 0
 
@@ -47,6 +59,15 @@ transcript=$(jq_in '.transcript_path // ""')
 session_id=$(jq_in '.session_id // ""')
 [ -n "$transcript" ] && [ -f "$transcript" ] || exit 0
 [ -n "$session_id" ] || exit 0
+
+# session_id 會被拼進 `nags-$session_id` 路徑並寫檔，而 reset.sh 拿同一個值去
+# `rm -f`。實際上它一律是 UUID（只含 [0-9a-f-]），但「實際上長這樣」不是防禦。
+# 白名單刻意與 agent_id 那條同一套字元集：一致的風格比逐處收得更緊更好維護，
+# 也不會誤殺日後可能出現的其他 id 形態。不符就靜默 exit 0——寧可少一次催告，
+# 也不要把 ../ 拼進會被寫入、會被刪除的路徑。
+case "$session_id" in
+    *[!A-Za-z0-9_-]*) exit 0 ;;
+esac
 
 # 目前 context 大小＝最後一筆「非 sidechain」assistant 訊息的 usage 總和。
 #

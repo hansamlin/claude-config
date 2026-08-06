@@ -1,6 +1,6 @@
 {
   "name": "context-handoff",
-  "version": "2.2.0",
+  "version": "2.2.1",
   "description": "主 session 與 sub agent 的 context 用量達門檻時自動交接",
   "author": {
     "name": "Sam Lin",

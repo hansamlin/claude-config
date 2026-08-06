@@ -7,10 +7,22 @@
 # 掛上去會在壓縮根本沒發生時誤清狀態。PostCompact 才代表真的壓縮完成。
 set -uo pipefail
 
+# 與 check.sh / subagent-check.sh / subagent-stop.sh 共用同一個總開關。
+# 2.2.1 之前只有這支漏掉，結果 CC_HANDOFF_DISABLE=1 之下 PostCompact 仍會去刪
+# nags-*——「完全停用」卻還在改狀態，是最難察覺的那種不一致。
+[ "${CC_HANDOFF_DISABLE:-0}" = "1" ] && exit 0
+
 STATE_DIR="${CC_HANDOFF_STATE_DIR:-$HOME/.claude/handoff-state}"
 
 session_id=$(cat | jq -r '.session_id // ""' 2>/dev/null)
 [ -n "$session_id" ] || exit 0
+
+# session_id 會被拼進下面 `rm -f` 的路徑——這是整個 plugin 唯一會刪檔的地方，
+# 風險最高，所以白名單在這裡最不可省。字元集與 check.sh / subagent-check.sh
+# 一致。不符就靜默 exit 0：不清狀態最多是多催一次，拼錯路徑去 rm 是災難。
+case "$session_id" in
+    *[!A-Za-z0-9_-]*) exit 0 ;;
+esac
 
 # 刻意**不清** sub agent 的 sa-<agent_id>：PostCompact 講的是主 session 被壓縮，
 # 與任何一個 sub agent 的 context 無關。清掉等於重新武裝 deny，對一個 context
