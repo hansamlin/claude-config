@@ -1,5 +1,9 @@
 #!/usr/bin/env bash
-# subagent-check.sh / subagent-stop.sh 的分支驗證。
+# subagent-check.sh 的分支驗證。
+#
+# 2.3.0 起本檔不再測 subagent-stop.sh——那支 hook 連同整條 SubagentStop 註冊
+# 已經移除（理由見 subagent-check.sh 檔頭「為什麼沒有任何人刪 sa-<agent_id>」）。
+# 原本第 10~13、17、20、20b 組已改寫成「hook 不存在時機制仍完整」的驗證。
 #
 # 全程在 mktemp 目錄裡跑，用 CC_HANDOFF_STATE_DIR 隔離，不會碰到
 # ~/.claude/handoff-state 的真實狀態。直接執行即可：
@@ -13,7 +17,7 @@ set -uo pipefail
 
 HERE=$(cd "$(dirname "${BASH_SOURCE[0]}")" && pwd)
 HOOK="$HERE/subagent-check.sh"
-STOP="$HERE/subagent-stop.sh"
+PLUGIN_ROOT=$(cd "$HERE/.." && pwd)
 
 TMP=$(mktemp -d)
 export CC_HANDOFF_STATE_DIR="$TMP/state"
@@ -47,20 +51,8 @@ run() { # run <transcript> [agent_id] [agent_type] [tool_name] [file_path] [perm
         | bash "$HOOK"
 }
 
-run_stop() { # run_stop [agent_id] [agent_type]
-    jq -n --arg a "${1:-}" --arg ty "${2:-}" \
-        '{session_id:"sess-x", transcript_path:"/tmp/t.jsonl",
-          hook_event_name:"SubagentStop",
-          last_assistant_message:"做完了", stop_reason:"end_turn"}
-         + (if $a == "" then {} else {agent_id:$a} end)
-         + (if $ty == "" then {} else {agent_type:$ty} end)' \
-        | bash "$STOP"
-}
-
 decision() { printf '%s' "$1" | jq -r '.hookSpecificOutput.permissionDecision // ""'; }
 reason()   { printf '%s' "$1" | jq -r '.hookSpecificOutput.permissionDecisionReason // ""'; }
-# 刻意沒有 ctx() helper：subagent-stop.sh 在任何路徑下 stdout 都必須是空的，
-# 「解析 stop 的輸出」這件事本身就是壞規格（見第 11 組）。
 
 pass=0; fail=0
 check() { # check <label> <expected-substring|EMPTY> <actual>
@@ -157,58 +149,90 @@ check "hot 有狀態檔" "sa-hot" "$(ls "$CC_HANDOFF_STATE_DIR" | grep sa-hot)"
 check "cold 沒有狀態檔" EMPTY "$(ls "$CC_HANDOFF_STATE_DIR/sa-cold" 2>/dev/null)"
 check "hot 被記帳後 cold 仍照常判定" EMPTY "$(run "$TMP/p9/sess.jsonl" cold general-purpose)"
 
-echo "── 10. SubagentStop：沒超標過 → 完全靜默"
-check "無 state 檔 → 無輸出" EMPTY "$(run_stop cold Explore 2>&1)"
-check "無 agent_id → 無輸出" EMPTY "$(run_stop 2>&1)"
-
-echo "── 11. SubagentStop：超標過 → 只清 state，stdout/stderr 都必須是空的"
-# 這是 2.2.1 修掉的線上缺陷：舊版在這條路徑吐 hookSpecificOutput.additionalContext。
-# 根因不是「harness 不認得那個形狀」——它完全認得，schema 的 .describe() 原文是
-# "non-error feedback delivered to the subagent; the subagent continues so it can
-# act on it"，規格語意就是「餵回 sub agent 並讓它續跑」。我們選錯了欄位。
-# 已結束的 sub agent 被續跑，下一次工具呼叫時 state 已被 rm 掉 → 重新 deny → 無限迴圈。
-# 對照實驗（唯一變因是 stdout）：有 stdout → 32 次 deny、跑不完；無 stdout → 1 次 deny、正常結束。
+echo "── 10. SubagentStop 這條風險面必須整條消失（結構斷言）"
+# 2.2.0 的事故根因是「SubagentStop 只要有任何輸出就會讓 sub agent 續跑」
+# （stdout / stderr / 非零 exit 三者皆算，binary 反查已結案）。2.2.1 靠
+# `exec >/dev/null 2>&1` 把它壓住，2.3.0 直接把整個事件拿掉——沒有註冊就
+# 沒有輸出，風險面歸零。
 #
-# 所有 run_stop 斷言一律帶 2>&1：消費端的判定是
-#   if (U.stdout && U.stdout.trim() || U.stderr && U.stderr.trim()) 續跑
-# ——**stderr 一樣算**。只看 stdout 的話，`set -u` unbound variable、重導向失敗
-# 這類洩漏會整批漏掉。斷言的是「沒有輸出」本身，不是輸出的內容。
+# 這兩條刻意驗檔案與註冊本身而不是行為：行為斷言驗不出「hook 還在但恰好靜默」
+# 與「hook 已經不存在」的差別，而這個 PR 要保證的正是後者。
+check "plugin 不再提供 subagent-stop.sh" "MISSING" \
+    "$([ -e "$HERE/subagent-stop.sh" ] && echo PRESENT || echo MISSING)"
+# 用 EMPTY 而不是空字串當期望值：check() 的 substring 分支對空字串是恆真的
+# （`case "$actual" in *""*)` 一律命中），寫成 "" 會是第四個 vacuous test。
+check "hooks.json 不得註冊 SubagentStop" EMPTY \
+    "$(jq -r 'if (.hooks.SubagentStop | type) == "array" then "REGISTERED" else "" end' \
+        "$PLUGIN_ROOT/hooks/hooks.json" 2>/dev/null)"
+# 反證：其餘三條註冊必須還在，否則上一條會因為「整份 hooks.json 壞掉」而假綠
+check "UserPromptSubmit 註冊仍在（證明上一條非 vacuous）" "check.sh" \
+    "$(jq -r '.hooks.UserPromptSubmit[0].hooks[0].command // ""' "$PLUGIN_ROOT/hooks/hooks.json")"
+check "PreToolUse 註冊仍在" "subagent-check.sh" \
+    "$(jq -r '.hooks.PreToolUse[0].hooks[0].command // ""' "$PLUGIN_ROOT/hooks/hooks.json")"
+check "PostCompact 註冊仍在" "reset.sh" \
+    "$(jq -r '.hooks.PostCompact[0].hooks[0].command // ""' "$PLUGIN_ROOT/hooks/hooks.json")"
+
+echo "── 11. 核心：同一個 sub agent 被續跑 → 絕不可第二次 deny"
+# 這是拿掉 SubagentStop 的**主要理由**，也是 2.2.x 完全沒被覆蓋的路徑。
 #
-# 這裡開始自己備妥 state 目錄，不要靠前面案例的副作用——否則實作一旦不建目錄，
-# 這幾條就會因為 fixture 沒寫成功而以錯誤的理由變紅
+# agent_id 被「重用」最現實的場景不是碰撞，是**同一個 sub agent 被續跑**：
+# 主 agent 用 SendMessage 續接既有 agent，或任何 resume 路徑。binary 的
+# SubagentStop payload 帶 stop_hook_active 且可以為 true → 續跑後再次觸發
+# SubagentStop 是被設計進去的情境；過去實驗也實際觀察到同一個 agent_id 出現
+# 兩次 SubagentStop（a31a2b30ca89831ff）。
+#
+# 續跑時 sub agent 的 context **還是滿的**（transcript 沒有縮水），舊版卻已經
+# 在收工時把 sa-<agent_id> 刪掉 → 下一次工具呼叫重新 deny → 再要求寫一次交接檔。
+# 所以這一組模擬的就是「收工之後又發工具呼叫」，用的是同一份超標 transcript。
 mkdir -p "$CC_HANDOFF_STATE_DIR"
-printf 'x' > "$CC_HANDOFF_STATE_DIR/subagent-handoff-hot.md"
-out11=$(run_stop hot Explore 2>&1)
-check "stdout 完全為空（任何輸出都會讓 sub agent 被續跑）" EMPTY "$out11"
-check "事後 state 檔已清除" EMPTY "$(ls "$CC_HANDOFF_STATE_DIR/sa-hot" 2>/dev/null)"
-check "交接檔絕不可被刪" "subagent-handoff-hot.md" \
-    "$(ls "$CC_HANDOFF_STATE_DIR" | grep subagent-handoff-hot.md)"
-check "清掉之後再跑一次仍然靜默" EMPTY "$(run_stop hot Explore 2>&1)"
+make_sa_transcript "$TMP/p11/sess/subagents/agent-resume1.jsonl" 400000 hot
+check "第 1 次：超標 → deny" "deny" \
+    "$(decision "$(run "$TMP/p11/sess.jsonl" resume1 general-purpose)")"
+check "記帳落地" "sa-resume1" "$(ls "$CC_HANDOFF_STATE_DIR" | grep sa-resume1)"
+# ── 這裡是 sub agent 收工的時間點。2.2.x 的 SubagentStop 會在此 rm 掉 sa-resume1。──
+check "續跑後第 1 次工具呼叫 → 放行" EMPTY "$(run "$TMP/p11/sess.jsonl" resume1 general-purpose)"
+check "續跑後第 2 次（換工具）→ 放行" EMPTY \
+    "$(run "$TMP/p11/sess.jsonl" resume1 general-purpose Bash "")"
+# context 續跑後只會更大，不會變小——用更大的用量再驗一次，確認放行不是靠
+# 「用量剛好沒再超過」這種巧合
+make_sa_transcript "$TMP/p11/sess/subagents/agent-resume1.jsonl" 900000 hot
+check "續跑且用量再翻倍 → 仍然放行" EMPTY "$(run "$TMP/p11/sess.jsonl" resume1 general-purpose)"
+check "記帳全程沒有被任何人刪掉" "sa-resume1" "$(ls "$CC_HANDOFF_STATE_DIR" | grep sa-resume1)"
 
-echo "── 12. SubagentStop：sub agent 沒照指示寫交接檔 → 照樣靜默，只清 state"
-# 舊版會在這裡吐「⚠️ 交接檔不存在」的警告；那條通道已證實有害，
-# 「交接檔沒寫出來」現在只能由主 agent 從 sub agent 的最終回覆看出來。
-printf '%s\n' Explore > "$CC_HANDOFF_STATE_DIR/sa-lazy"
-out12=$(run_stop lazy Explore 2>&1)
-check "交接檔不存在時也不可有輸出" EMPTY "$out12"
-check "state 仍然被清掉" EMPTY "$(ls "$CC_HANDOFF_STATE_DIR/sa-lazy" 2>/dev/null)"
+echo "── 12. 交接檔在整個生命週期裡都不可被動到"
+# 交接檔是主 agent 要餵給續作 sub agent 的唯一輸入。2.2.x 的 stop hook 明文
+# 只刪 state 不刪交接檔，那條保證在 hook 移除後由「沒有人會刪」自動成立，
+# 但仍要有回歸斷言——日後若有人在 subagent-check.sh 裡加清理邏輯就會被抓到。
+printf 'handoff-content' > "$CC_HANDOFF_STATE_DIR/subagent-handoff-resume1.md"
+run "$TMP/p11/sess.jsonl" resume1 general-purpose >/dev/null 2>&1
+check "交接檔內容原封不動" "handoff-content" \
+    "$(cat "$CC_HANDOFF_STATE_DIR/subagent-handoff-resume1.md" 2>/dev/null)"
+# 未超標的 agent 走的是另一條早退路徑，一樣不可碰任何檔案
+make_sa_transcript "$TMP/p12/sess/subagents/agent-cool.jsonl" 1000 cool
+run "$TMP/p12/sess.jsonl" cool general-purpose >/dev/null 2>&1
+check "未超標路徑也不動交接檔" "handoff-content" \
+    "$(cat "$CC_HANDOFF_STATE_DIR/subagent-handoff-resume1.md" 2>/dev/null)"
 
-echo "── 13. SubagentStop：payload 沒帶 agent_type → 不可噴錯，仍靜默清理"
-# agent_type 對這支 hook 已經完全沒有用途（不再組任何訊息），
-# 但缺欄位不能讓 set -u 之類的東西把腳本弄爛。
-mkdir -p "$CC_HANDOFF_STATE_DIR"
-printf '%s\n' code-simplifier > "$CC_HANDOFF_STATE_DIR/sa-noty"
-check "無 agent_type → 無輸出" EMPTY "$(run_stop noty 2>&1)"
-check "無 agent_type → state 仍被清掉" EMPTY \
-    "$(ls "$CC_HANDOFF_STATE_DIR/sa-noty" 2>/dev/null)"
+echo "── 13. sa-<agent_id> 的回收完全依賴 check.sh 的 7 天清掃"
+# 拿掉 stop hook 的代價就是這個：沒有任何人會主動刪 sa-*。這條驗的是
+# 「清掃機制構得到它」，清掃時機本身由 check.test.sh 第 3b 組負責。
+printf '%s\n' general-purpose > "$CC_HANDOFF_STATE_DIR/sa-ancient"
+touch -t "$(date -v-8d +%Y%m%d%H%M 2>/dev/null || date -d '8 days ago' +%Y%m%d%H%M)" \
+    "$CC_HANDOFF_STATE_DIR/sa-ancient" 2>/dev/null
+find "$CC_HANDOFF_STATE_DIR" -maxdepth 1 -type f -mtime +7 -delete 2>/dev/null
+check "sa-* 是普通檔案，find -type f 掃得到" EMPTY \
+    "$(ls "$CC_HANDOFF_STATE_DIR/sa-ancient" 2>/dev/null)"
+check "同一次清掃不會誤刪還在用的 sa-resume1" "sa-resume1" \
+    "$(ls "$CC_HANDOFF_STATE_DIR" | grep sa-resume1)"
 
-echo "── 14. CC_HANDOFF_DISABLE=1 → 兩支都完全靜默"
+echo "── 14. CC_HANDOFF_DISABLE=1 → 完全靜默、且不留任何副作用"
 make_sa_transcript "$TMP/p14/sess/subagents/agent-off.jsonl" 999999 off
-check "check 停用" EMPTY "$(CC_HANDOFF_DISABLE=1 run "$TMP/p14/sess.jsonl" off general-purpose)"
+check "check 停用" EMPTY "$(CC_HANDOFF_DISABLE=1 run "$TMP/p14/sess.jsonl" off general-purpose 2>&1)"
 check "停用時不留狀態檔" EMPTY "$(ls "$CC_HANDOFF_STATE_DIR/sa-off" 2>/dev/null)"
+# 停用是「什麼都不做」，不是「做別的事」——既有的狀態檔一個都不可以被動到
 printf '%s\n' Explore > "$CC_HANDOFF_STATE_DIR/sa-off2"
-check "stop 停用" EMPTY "$(CC_HANDOFF_DISABLE=1 run_stop off2 Explore 2>&1)"
-check "停用時不清狀態檔" "sa-off2" "$(ls "$CC_HANDOFF_STATE_DIR" | grep sa-off2)"
+CC_HANDOFF_DISABLE=1 run "$TMP/p14/sess.jsonl" off2 general-purpose >/dev/null 2>&1
+check "停用時不清既有狀態檔" "sa-off2" "$(ls "$CC_HANDOFF_STATE_DIR" | grep sa-off2)"
 
 echo "── 15. 惡意 agent_id 不可拼進路徑"
 make_sa_transcript "$TMP/p15/sess/subagents/agent-x.jsonl" 999999 x
@@ -224,29 +248,33 @@ check "非字串 file_path 仍能 deny" "deny" "$(decision "$(jq -n --arg t "$TM
       tool_input:{file_path:{nested:1}}, agent_id:"weird", agent_type:"general-purpose"}' \
     | bash "$HOOK")")"
 
-echo "── 16. 輸出為合法 JSON（只有 check 會輸出；stop 一律不輸出）"
+echo "── 16. 輸出為合法 JSON（deny 是這支 hook 唯一會輸出的路徑）"
 make_sa_transcript "$TMP/p16/sess/subagents/agent-json.jsonl" 999999 json
 check "deny 輸出可被 jq 解析" "hookSpecificOutput" \
     "$(run "$TMP/p16/sess.jsonl" json general-purpose | jq -r 'keys | join(",")')"
-printf '%s\n' Explore > "$CC_HANDOFF_STATE_DIR/sa-json2"
-check "stop 沒有任何 stdout 可解析" EMPTY "$(run_stop json2 Explore 2>&1)"
+check "deny 之外的路徑不吐任何東西（含 stderr）" EMPTY \
+    "$(run "$TMP/p16/sess.jsonl" json general-purpose 2>&1)"
 
-echo "── 17. 跨檔回歸：check 建 state → stop 收工，全程 stop 不可吐 stdout"
-# 這個 bug 在 52 條斷言全綠的情況下仍然漏掉，就是因為它出在兩支腳本的互動上：
-# 單看 subagent-check.sh 沒問題、單看 subagent-stop.sh 也「照規格」輸出，
-# 合起來才變成「stop 吐 stdout → sub agent 被續跑 → state 已被 rm → 重新 deny」的迴圈。
-# 所以這裡不手工造 state，一律讓 subagent-check.sh 自己把它寫出來。
+echo "── 17. 端到端：整段生命週期只能有一次 deny，且沒有任何外力重置記帳"
+# 2.2.x 的這一組驗的是兩支腳本的互動（stop 吐 stdout → 續跑 → state 已被 rm →
+# 重新 deny 的迴圈）。stop hook 移除後，那個互動面消失了，換成驗更強的性質：
+# **從 deny 到 sub agent 生命週期結束為止，deny 恰好發生一次**——不管中途發生
+# 什麼（換工具、換 permission_mode、用量繼續長、收工後被續跑）。
+# 仍然不手工造 state，一律讓 subagent-check.sh 自己把它寫出來。
 make_sa_transcript "$TMP/p17/sess/subagents/agent-xfile.jsonl" 400000 xfile
-check "第 1 步：check 超標 → deny" "deny" \
-    "$(decision "$(run "$TMP/p17/sess.jsonl" xfile general-purpose)")"
+deny_count=0
+tally() { [ "$(decision "$1")" = "deny" ] && deny_count=$((deny_count+1)); return 0; }
+tally "$(run "$TMP/p17/sess.jsonl" xfile general-purpose)"
 check "第 1 步的副作用：state 由 check 真的寫出來了" "sa-xfile" \
     "$(ls "$CC_HANDOFF_STATE_DIR" 2>/dev/null | grep sa-xfile)"
-check "第 2 步：check 的第二次呼叫已放行（沒有第二次 deny）" EMPTY \
-    "$(run "$TMP/p17/sess.jsonl" xfile general-purpose)"
-out17=$(run_stop xfile general-purpose 2>&1)
-check "第 3 步：stop 的 stdout 必須為空" EMPTY "$out17"
-check "第 3 步：state 檔已被 stop 移除" EMPTY \
-    "$(ls "$CC_HANDOFF_STATE_DIR/sa-xfile" 2>/dev/null)"
+tally "$(run "$TMP/p17/sess.jsonl" xfile general-purpose Write /some/file)"
+tally "$(run "$TMP/p17/sess.jsonl" xfile general-purpose Bash "" default)"
+make_sa_transcript "$TMP/p17/sess/subagents/agent-xfile.jsonl" 800000 xfile
+tally "$(run "$TMP/p17/sess.jsonl" xfile general-purpose)"
+# ── 收工 → 被續跑。2.2.x 在此會 rm 掉 sa-xfile，於是下面這兩次會再 deny。──
+tally "$(run "$TMP/p17/sess.jsonl" xfile general-purpose)"
+tally "$(run "$TMP/p17/sess.jsonl" xfile general-purpose Read /tmp/x)"
+check "六次工具呼叫（含續跑）合計恰好 1 次 deny" "1" "$deny_count"
 
 echo "── 18. skip 清單：寫不出交接檔的 agent_type 一律不攔"
 # Explore / Plan 的工具集是「All tools except Agent, Artifact, ExitPlanMode,
@@ -325,41 +353,34 @@ make_sa_transcript "$TMP/p19/sess/subagents/agent-pm6.jsonl" 999999 pm6
 check "permission_mode=planning（多字元）→ 照常 deny" "deny" \
     "$(decision "$(run "$TMP/p19/sess.jsonl" pm6 general-purpose Read /tmp/whatever planning)")"
 
-echo "── 20. subagent-stop.sh：exec 之後 CC_HANDOFF_TRACE 仍必須寫得出來"
-# `exec >/dev/null 2>&1` 只塞住 stdout/stderr，trace 是 `>>` 到檔案，不受影響。
-# 這條是防「為了不輸出而把 trace 一起弄壞」的回歸——trace 是這支 hook 唯一
-# 能便宜證實它有在跑的手段。
-printf '%s\n' general-purpose > "$CC_HANDOFF_STATE_DIR/sa-trace1"
-trace_out=$(CC_HANDOFF_TRACE="$TMP/trace.jsonl" run_stop trace1 general-purpose 2>&1)
-check "帶 TRACE 時仍然完全無輸出" EMPTY "$trace_out"
-check "TRACE 檔真的被寫入" "SubagentStop" "$(cat "$TMP/trace.jsonl" 2>/dev/null)"
-check "TRACE 檔內容是合法 JSON" "trace1" \
+echo "── 20. subagent-check.sh 的 CC_HANDOFF_TRACE"
+# trace 是這支 hook 唯一能便宜證實「它真的有在跑」的手段——它最大的失敗模式是
+# 靜默地永遠不觸發（路徑推導錯、payload 沒有 agent_id 之類）。
+# 原本第 20 組驗的是 subagent-stop.sh 的 trace；那支已移除，覆蓋改掛到這支。
+make_sa_transcript "$TMP/p20/sess/subagents/agent-tr1.jsonl" 1000 tr1
+trace_out=$(CC_HANDOFF_TRACE="$TMP/trace.jsonl" \
+    run "$TMP/p20/sess.jsonl" tr1 general-purpose 2>&1)
+check "未達門檻仍然靜默（trace 不是輸出）" EMPTY "$trace_out"
+check "TRACE 檔真的被寫入" "PreToolUse" "$(cat "$TMP/trace.jsonl" 2>/dev/null)"
+check "TRACE 檔內容是合法 JSON" "tr1" \
     "$(jq -r '.agent_id // ""' < "$TMP/trace.jsonl" 2>/dev/null)"
+# trace 寫入必須排在所有早退**之前**，否則「靜默地永遠不觸發」正好是它查不到的
+# 那一類。主 agent 的呼叫（無 agent_id）走的是最早的一條早退，用它來驗最嚴格。
+: > "$TMP/trace2.jsonl"
+CC_HANDOFF_TRACE="$TMP/trace2.jsonl" run "$TMP/p20/sess.jsonl" >/dev/null 2>&1
+check "連最早的早退（主 agent、無 agent_id）也已寫進 trace" "PreToolUse" \
+    "$(cat "$TMP/trace2.jsonl" 2>/dev/null)"
 
-# TRACE 指到不可寫路徑是第二條已知的 stderr 洩漏路徑：`>> "$CC_HANDOFF_TRACE"`
-# 沒有 2>/dev/null，bash 會把重導向錯誤寫到 stderr，而 stderr 有內容就會讓
-# 已結束的 sub agent 被續跑。`exec >/dev/null 2>&1` 是唯一擋得住的地方
-# （逐行加 2>/dev/null 擋不住下一個忘記加的人）。
-printf '%s\n' general-purpose > "$CC_HANDOFF_STATE_DIR/sa-trace2"
+# TRACE 指到不可寫路徑：`>> "$CC_HANDOFF_TRACE"` 沒有 2>/dev/null，bash 會把
+# 重導向錯誤寫到 stderr。這支 hook 沒有 `exec >/dev/null 2>&1`（它必須能吐
+# deny 的 JSON），所以驗的是「除錯開關設錯不可污染正常路徑的判定」：
+# stdout 仍是乾淨的 deny JSON、exit code 仍為 0。
+make_sa_transcript "$TMP/p20/sess/subagents/agent-tr2.jsonl" 999999 tr2
 bad_trace=$(CC_HANDOFF_TRACE="$TMP/no-such-dir/trace.jsonl" \
-    run_stop trace2 general-purpose 2>&1)
+    run "$TMP/p20/sess.jsonl" tr2 general-purpose 2>/dev/null)
 bad_trace_rc=$?
-check "TRACE 指到不可寫路徑 → 仍然完全無輸出" EMPTY "$bad_trace"
+check "TRACE 指到不可寫路徑 → deny 仍然正常產出" "deny" "$(decision "$bad_trace")"
 check "TRACE 指到不可寫路徑 → exit code 仍為 0" "0" "$bad_trace_rc"
-
-echo "── 20b. subagent-stop.sh：HOME 與 STATE_DIR 都沒設定 → stdout/stderr/exit code 三者都要乾淨"
-# 這正是 `exec >/dev/null 2>&1` 與 `${HOME:-}` 要擋的情境：`set -u` 下
-# `$HOME/.claude/...` 會噴 unbound variable 到 stderr **並且**非零退出，
-# 而消費端「有輸出」與「非零 exit（hook_non_blocking_error）」兩條都會讓
-# 已結束的 sub agent 被續跑。
-naked=$(env -u HOME -u CC_HANDOFF_STATE_DIR -u CC_HANDOFF_TRACE \
-    -u CC_HANDOFF_DISABLE bash "$STOP" <<'EOF' 2>&1
-{"session_id":"sess-x","hook_event_name":"SubagentStop","agent_id":"nohome"}
-EOF
-)
-naked_rc=$?
-check "HOME 未設定 → stdout+stderr 皆空" EMPTY "$naked"
-check "HOME 未設定 → exit code 為 0" "0" "$naked_rc"
 
 echo
 echo "PASS=$pass FAIL=$fail"

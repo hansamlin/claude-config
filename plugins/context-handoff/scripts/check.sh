@@ -34,6 +34,22 @@ input=$(cat)
 [ -n "${CC_HANDOFF_TRACE:-}" ] && printf '%s\n' "$input" >> "$CC_HANDOFF_TRACE"
 jq_in() { printf '%s' "$input" | jq -r "$1" 2>/dev/null; }
 
+# 清掉 7 天前的殘留狀態檔。
+#
+# 位置刻意排在所有早退**之前**（只落後於 DISABLE 開關與讀 stdin）。
+# 舊版排在門檻判定、`/handoff` 逃生口、「已交接就 block」這三個早退之後，
+# 於是它只在「已達門檻 **且** 這則不是 handoff **且** 尚未交接過」這條窄路徑
+# 上才跑：一旦該 session 交接過就再也不跑，主 session 從沒破過門檻的機器上
+# 等於完全不跑。
+#
+# 這件事在 SubagentStop 註冊被拿掉之後從「殘留垃圾」升級成「唯一的回收路徑」：
+# `sa-<agent_id>` 現在沒有任何人會主動刪（見 subagent-check.sh 檔頭），全靠這行。
+# 受影響的還有 `subagent-handoff-*.md`（有內容，可能數 KB），舊版同樣清不到。
+#
+# 成本：對十幾個檔的單層目錄，find 是微秒級；換來的是每一則使用者訊息都清一次。
+# 目錄不存在時 `2>/dev/null` 靜默 no-op，不必先 mkdir。
+find "$STATE_DIR" -maxdepth 1 -type f -mtime +7 -delete 2>/dev/null
+
 # sub agent 的 context 與主 session 無關，交接要等主 agent 接手才有意義。
 # 真正做到這件事的**不是**下面那行 agent_id guard，而是下方算 used 時的
 # `isSidechain != true` 過濾——sub agent 的訊息在主 transcript 裡全都是
@@ -205,9 +221,6 @@ fi
 
 mkdir -p "$STATE_DIR" 2>/dev/null || exit 0
 nags="$STATE_DIR/nags-$session_id"
-
-# 順手清掉 7 天前的殘留狀態檔
-find "$STATE_DIR" -maxdepth 1 -type f -mtime +7 -delete 2>/dev/null
 
 count=$(cat "$nags" 2>/dev/null)
 case "$count" in

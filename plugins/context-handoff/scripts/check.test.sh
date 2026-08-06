@@ -124,6 +124,47 @@ make_transcript 299999 "" "$TMP/t3.jsonl"
 check "靜默不觸發" EMPTY "$(run sess-3 "$TMP/t3.jsonl")"
 check "未留下狀態檔" EMPTY "$(ls "$CC_HANDOFF_STATE_DIR"/nags-sess-3 2>/dev/null)"
 
+echo "── 3b. 7 天清掃必須排在所有早退之前（每一則 prompt 都跑）"
+# 舊版把這個 find 排在三個早退之後（未達門檻 / `/handoff` 逃生口 / 已交接就
+# block），於是它只在「已達門檻 **且** 這則不是 handoff **且** 尚未交接過」這條
+# 窄路徑上跑：一旦該 session 交接過就再也不跑，主 session 從沒破過門檻的機器上
+# 等於完全不跑。受害的不只 1 byte 的 sa-*，還有可能數 KB 的 subagent-handoff-*.md。
+#
+# SubagentStop 註冊移除之後（2.3.0）這條從「殘留垃圾」升級成 sa-* 的**唯一**
+# 回收路徑，所以每一條早退路徑都要單獨驗一次，不能只驗 happy path。
+mkdir -p "$CC_HANDOFF_STATE_DIR"
+stale_probe() { # stale_probe <tag> — 造一個 8 天前的舊檔與一個剛剛的新檔
+    touch -t "$(date -v-8d +%Y%m%d%H%M 2>/dev/null || date -d '8 days ago' +%Y%m%d%H%M)" \
+        "$CC_HANDOFF_STATE_DIR/sa-stale-$1" 2>/dev/null
+    printf 'x' > "$CC_HANDOFF_STATE_DIR/sa-fresh-$1"
+}
+# (a) 未達門檻——最常走、也是舊版完全掃不到的一條
+stale_probe a
+run sess-3b "$TMP/t3.jsonl" >/dev/null
+check "未達門檻路徑也清掉 8 天前的舊檔" EMPTY \
+    "$(ls "$CC_HANDOFF_STATE_DIR/sa-stale-a" 2>/dev/null)"
+check "未達門檻路徑不誤刪新檔" "sa-fresh-a" \
+    "$(ls "$CC_HANDOFF_STATE_DIR" | grep sa-fresh-a)"
+# (b) `/handoff` 逃生口
+make_transcript 310000 "" "$TMP/t3b.jsonl"
+stale_probe b
+run sess-3b2 "$TMP/t3b.jsonl" "" "" "/handoff" >/dev/null
+check "/handoff 逃生口路徑也清掉舊檔" EMPTY \
+    "$(ls "$CC_HANDOFF_STATE_DIR/sa-stale-b" 2>/dev/null)"
+# (c) 已交接過 → block
+make_transcript 310000 "" "$TMP/t3c.jsonl"
+append_handoff_call "$TMP/t3c.jsonl"
+stale_probe c
+run sess-3b3 "$TMP/t3c.jsonl" >/dev/null
+check "已交接過（block）路徑也清掉舊檔" EMPTY \
+    "$(ls "$CC_HANDOFF_STATE_DIR/sa-stale-c" 2>/dev/null)"
+# (d) 交接檔本身也在清掃範圍內——它有內容，才是真正佔空間的那個
+touch -t "$(date -v-8d +%Y%m%d%H%M 2>/dev/null || date -d '8 days ago' +%Y%m%d%H%M)" \
+    "$CC_HANDOFF_STATE_DIR/subagent-handoff-old.md" 2>/dev/null
+run sess-3b4 "$TMP/t3.jsonl" >/dev/null
+check "8 天前的交接檔也被清掉" EMPTY \
+    "$(ls "$CC_HANDOFF_STATE_DIR/subagent-handoff-old.md" 2>/dev/null)"
+
 echo "── 4. 用量達門檻 → 注入 handoff 指示"
 make_transcript 310000 "" "$TMP/t4.jsonl"
 out4=$(run sess-4 "$TMP/t4.jsonl")

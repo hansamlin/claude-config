@@ -31,6 +31,26 @@
 #   「想寫→被擋→再試→被擋」的死鎖，最後帶著滿的 context 空手而回。
 #   所以發過一次指示就記帳，之後一律放行。
 #
+# 為什麼沒有任何人刪 sa-<agent_id>（2.3.0 起）：
+#   2.2.x 有一支 SubagentStop hook 專門在 sub agent 收工時 `rm` 掉這個檔，理由是
+#   「agent_id 萬一被重用，不要吃掉新一輪的交接機會」。那條註冊已整條移除，因為
+#   它與上面那條「只 deny 一次」的保證**互相衝突**：
+#     agent_id 被「重用」最現實的場景是**同一個 sub agent 被續跑**（主 agent 用
+#     SendMessage 續接既有 agent，或任何 resume 路徑；binary 的 SubagentStop
+#     payload 帶 stop_hook_active 且可以為 true → 續跑後再次觸發是被設計進去的
+#     情境）。那時它的 context **還是滿的**，記帳卻已經被刪掉，於是它下一次工具
+#     呼叫會**再被 deny 一次**，再被要求寫一次交接檔。
+#   這正是 2.2.0 無限迴圈的放大器。真正的「agent_id 碰撞」機率極低（隨機十六進位
+#   識別字），殘留檔本身也無害（deny 已經發過，不會死鎖），所以取捨明確：不刪。
+#
+#   附帶好處：那支 hook 從此沒有任何作用，整條 SubagentStop 註冊可以拿掉——
+#   **少一個事件、少一個會吐輸出的風險面**。而「SubagentStop 只要有任何輸出
+#   （stdout / stderr / 非零 exit 皆算）就會讓 sub agent 續跑」正是 2.2.0 那場
+#   事故的根源，永久移除這個風險面很划算。
+#
+#   代價：sa-* 的回收從此**完全**依賴 check.sh 的 7 天 find 清掃。那行原本排在
+#   三個早退之後（窄到幾乎不跑），已一併移到所有早退之前（同一個 PR）。
+#
 # 為什麼不叫 sub agent 去跑 handoff skill：
 #   那支 skill 寫的是**專案長期記憶**，而且會按任務主題去重、就地更新既有的
 #   `type: project` 記憶檔。sub agent 手上的東西是任務內的接力棒（只在這一次
@@ -49,7 +69,8 @@
 #   會把全部資料濾光、門檻永遠不觸發且完全靜默。
 #
 # 為什麼不在這裡順手清 7 天前的狀態檔：
-#   check.sh 已經在每次使用者送出訊息時掃過 STATE_DIR 了。這支 hook 是
+#   check.sh 已經在**每一則**使用者訊息掃過 STATE_DIR 了（2.3.0 起那行排在所有
+#   早退之前，不再只跑在「達門檻且未交接過」那條窄路徑上）。這支 hook 是
 #   **每一次工具呼叫**都跑（最多 20 個 sub agent 並發），多跑一個 find 就是
 #   把成本乘上工具呼叫次數。清掃交給 check.sh。
 #
@@ -235,8 +256,8 @@ printf '%s\n' "${agent_type:-unknown}" > "$state" 2>/dev/null || exit 0
 
 # 註：續作的 sub agent 是新的 agent_id，若它也超標會寫到另一個
 # subagent-handoff-<新 id>.md。接力鏈靠的是每一代 sub agent 各自在最終回覆裡
-# 報出自己那份交接檔的路徑——**不是** SubagentStop（那支現在只清 state、不吐
-# 任何 stdout，理由見 subagent-stop.sh 檔頭的對照實驗）。
+# 報出自己那份交接檔的路徑。**沒有** SubagentStop 兜底——那條通道已於 2.2.1
+# 證實有害（任何輸出都會讓 sub agent 續跑）並於 2.3.0 整條移除，理由見檔頭。
 # 舊的交接檔不會被合併或刪除，靠 STATE_DIR 的 7 天清掃收尾。
 jq -n --arg f "$handoff_file" --argjson used "$used" --argjson threshold "$THRESHOLD" '
 {
