@@ -52,16 +52,44 @@ append_usage() { # append_usage <transcript> <total>
                           cache_read_input_tokens:0, output_tokens:0}}}' >> "$1"
 }
 
-run() { # run <session_id> <transcript> [agent_id] [agent_type]
+# 使用者輸入文字的欄位名：實測 2026-08-06（Claude Code 2.1.223）線上攔到的
+# UserPromptSubmit payload 帶的是 `prompt`。官方文件寫的 `prompt_text` 與本檔
+# 舊版 run() 用的 `user_message` 都不符實際——舊版那條等於一直在測一個不存在
+# 的欄位（vacuous）。故 run() 一律送 `prompt`，另有專門的 case 覆蓋 check.sh
+# 保留的兩個防禦性 fallback。
+run() { # run <session_id> <transcript> [agent_id] [agent_type] [prompt]
     jq -n --arg s "$1" --arg t "$2" --arg a "${3:-}" --arg ty "${4:-}" \
+          --arg p "${5:-接下來幫我改 X}" \
         '{session_id:$s, transcript_path:$t, cwd:"/tmp",
-          hook_event_name:"UserPromptSubmit", user_message:"接下來幫我改 X"}
+          hook_event_name:"UserPromptSubmit", prompt:$p}
          + (if $a == "" then {} else {agent_id:$a} end)
          + (if $ty == "" then {} else {agent_type:$ty} end)' \
         | bash "$HOOK"
 }
 
+# 只填指定的某一個 prompt 候選欄位，用來驗 fallback 順位
+run_field() { # run_field <session_id> <transcript> <field> <prompt>
+    jq -n --arg s "$1" --arg t "$2" --arg f "$3" --arg p "$4" \
+        '{session_id:$s, transcript_path:$t, cwd:"/tmp",
+          hook_event_name:"UserPromptSubmit"} + {($f): $p}' \
+        | bash "$HOOK"
+}
+
 ctx() { printf '%s' "$1" | jq -r '.hookSpecificOutput.additionalContext // ""'; }
+sysmsg() { printf '%s' "$1" | jq -r '.systemMessage // ""'; }
+
+# 實測：背景任務跑完的通知也是走 UserPromptSubmit 進來的，不是只有真人打字。
+# 這則是線上攔到的原樣（縮短過）。
+TASK_NOTIF='<task-notification>
+<task-id>b54w7e7k5</task-id>
+<status>completed</status>
+<summary>Background command "Run full unit test suite" completed (exit code 0)</summary>
+</task-notification>'
+
+# 「不該出現的字串」檢查：命中就回傳整段輸出（交給 check ... EMPTY 判定失敗）
+lacks() { # lacks <needle> <haystack>
+    case "$2" in *"$1"*) printf '%s' "$2" ;; esac
+}
 
 pass=0; fail=0
 check() { # check <label> <expected-substring|EMPTY> <actual>
@@ -110,6 +138,62 @@ check "催告次數記為 1" "1" "$(cat "$CC_HANDOFF_STATE_DIR"/nags-sess-4 2>/d
 echo "── 4b. 不可用 decision:block（block 不產生 turn，Claude 沒機會跑 skill）"
 check "沒有 decision 欄位" EMPTY "$(printf '%s' "$out4" | jq -r '.decision // ""')"
 
+echo "── 4c. 這則 prompt 本身就是 handoff 呼叫 → 仍介入，但不重複叫它去 handoff"
+# 使用者自己看到 context 爆了主動打 /handoff。再注入「先不要執行使用者要求的
+# 工作，去呼叫 handoff skill」對這種 prompt 毫無意義，也不該吃掉催告額度。
+out4c=$(run sess-4c "$TMP/t4.jsonl" "" "" "/handoff")
+check "給 systemMessage 且點明是回應使用者自己的 handoff" "已收到你的 handoff 請求" \
+    "$(sysmsg "$out4c")"
+check "不注入 handoff 指示" EMPTY "$(ctx "$out4c")"
+check "不 block（要讓 handoff skill 有 turn 可跑）" EMPTY \
+    "$(printf '%s' "$out4c" | jq -r '.decision // ""')"
+check "未動用催告額度" EMPTY "$(ls "$CC_HANDOFF_STATE_DIR"/nags-sess-4c 2>/dev/null)"
+check "訊息不含「本次請求已改為」" EMPTY "$(lacks "本次請求已改為" "$out4c")"
+
+out4d=$(run sess-4d "$TMP/t4.jsonl" "" "" "/context-handoff:handoff 順便記一下 X")
+check "帶 plugin 前綴與參數也認得" "已收到你的 handoff 請求" \
+    "$(sysmsg "$out4d")"
+check "同樣不注入指示" EMPTY "$(ctx "$out4d")"
+check "同樣不動用催告額度" EMPTY "$(ls "$CC_HANDOFF_STATE_DIR"/nags-sess-4d 2>/dev/null)"
+
+check "整則就是「交接」兩字也認得" "已收到你的 handoff 請求" \
+    "$(sysmsg "$(run sess-4e "$TMP/t4.jsonl" "" "" "  交接  ")")"
+
+# 實測使用者 shell history：句尾附加才是他最常見的用法，只認行首會漏掉一大半
+check "句尾 /handoff（前面接中文）" "已收到你的 handoff 請求" \
+    "$(sysmsg "$(run sess-4h "$TMP/t4.jsonl" "" "" "MR #846 #847 都合併了，更新記憶然後 /handoff")")"
+check "句尾 /handoff（前面接全形逗號）" "已收到你的 handoff 請求" \
+    "$(sysmsg "$(run sess-4i "$TMP/t4.jsonl" "" "" "develop pipeline 也全部綠，/handoff")")"
+check "句尾 /handoff（極短句）" "已收到你的 handoff 請求" \
+    "$(sysmsg "$(run sess-4j "$TMP/t4.jsonl" "" "" "已合併 /handoff")")"
+check "句尾 /handoff 不動用催告額度" EMPTY \
+    "$(ls "$CC_HANDOFF_STATE_DIR"/nags-sess-4j 2>/dev/null)"
+
+# 比對必須收斂：寬鬆 substring 會讓下面這些「在談論 handoff」的句子命中，
+# 門檻機制等於被使用者一句閒聊關掉。這幾條是防寬鬆比對回歸的守門測試。
+check "含 handoff 字樣但不是呼叫 → 照常注入指示" "先不要執行" \
+    "$(ctx "$(run sess-4f "$TMP/t4.jsonl" "" "" "以後不要再自動 handoff 了")")"
+check "含 handoff 字樣的一般 prompt 照常記催告" "1" \
+    "$(cat "$CC_HANDOFF_STATE_DIR"/nags-sess-4f 2>/dev/null)"
+check "句中談論 handoff skill → 照常注入指示" "先不要執行" \
+    "$(ctx "$(run sess-4k "$TMP/t4.jsonl" "" "" "hook 會在上下文超過 300k 時，會觸發 handoff skill")")"
+check "/handoffxyz 不是完整指令 → 照常注入指示" "先不要執行" \
+    "$(ctx "$(run sess-4l "$TMP/t4.jsonl" "" "" "/handoffxyz 這是什麼")")"
+
+# 未達門檻時不因為 prompt 是 handoff 就多嘴
+check "未達門檻 + /handoff → 完全靜默" EMPTY \
+    "$(run sess-4g "$TMP/t3.jsonl" "" "" "/handoff")"
+
+echo "── 4d. prompt 欄位：實測為 .prompt，另兩個候選僅作防禦性 fallback"
+check "只給 .prompt → 認得（實測欄位）" "已收到你的 handoff 請求" \
+    "$(sysmsg "$(run_field sess-4m "$TMP/t4.jsonl" prompt "/handoff")")"
+check "只給 .prompt_text → fallback 認得" "已收到你的 handoff 請求" \
+    "$(sysmsg "$(run_field sess-4n "$TMP/t4.jsonl" prompt_text "/handoff")")"
+check "只給 .user_message → fallback 認得" "已收到你的 handoff 請求" \
+    "$(sysmsg "$(run_field sess-4o "$TMP/t4.jsonl" user_message "/handoff")")"
+check "完全沒有 prompt 欄位 → 照常注入指示（不誤判）" "先不要執行" \
+    "$(ctx "$(run_field sess-4p "$TMP/t4.jsonl" unrelated "/handoff")")"
+
 echo "── 5. 模型忽略指示（transcript 查無 handoff）→ 必須繼續催"
 check "第 2 次仍注入指示" "handoff" "$(ctx "$(run sess-4 "$TMP/t4.jsonl")")"
 check "催告次數累加到 2" "2" "$(cat "$CC_HANDOFF_STATE_DIR"/nags-sess-4 2>/dev/null)"
@@ -128,6 +212,36 @@ out7=$(run sess-7 "$TMP/t7.jsonl")
 check "不再注入指示" EMPTY "$(ctx "$out7")"
 check "只給已交接的提醒" "已交接過" "$out7"
 check "未動用催告額度" EMPTY "$(ls "$CC_HANDOFF_STATE_DIR"/nags-sess-7 2>/dev/null)"
+# 這個分支要真正中斷：只給 systemMessage 的話 Claude 照樣有 turn 去做事，
+# 使用者已經交接完了卻還在這個 session 裡繼續累積 context。
+# 與 4b 不同——那個分支還需要 turn 去跑 handoff skill，這個分支已經跑完了。
+check "已交接分支 decision=block" "block" \
+    "$(printf '%s' "$out7" | jq -r '.decision // ""')"
+check "reason 帶提示文字" "已交接過" "$(printf '%s' "$out7" | jq -r '.reason // ""')"
+check "reason 帶目前用量" "310000" "$(printf '%s' "$out7" | jq -r '.reason // ""')"
+
+# 逃生口：交接後又多做了些事想再交接一次，不可被 block 永久鎖死。
+# 這也是為什麼 handoff-prompt 判定必須排在這個 block 分支「之前」。
+out7c=$(run sess-7c "$TMP/t7.jsonl" "" "" "/handoff")
+check "已交接過 + /handoff → 不被 block" EMPTY \
+    "$(printf '%s' "$out7c" | jq -r '.decision // ""')"
+check "已交接過 + /handoff → 走 handoff-prompt 分支" "已收到你的 handoff 請求" \
+    "$(sysmsg "$out7c")"
+
+# 實測發現：UserPromptSubmit 不等於「真人送出訊息」——背景任務跑完的通知也走
+# 同一條路。block 會 erase 掉這則 prompt，主 agent 就永遠收不到自己派出去的
+# 背景工作結果。使用者要的是「已交接後不要再執行新任務」，不是讓已經在跑的
+# 背景工作結果人間蒸發。這是本次改動風險最高的一處。
+out7d=$(run sess-7d "$TMP/t7.jsonl" "" "" "$TASK_NOTIF")
+check "已交接過 + 背景任務通知 → 絕不可 block" EMPTY \
+    "$(printf '%s' "$out7d" | jq -r '.decision // ""')"
+check "已交接過 + 背景任務通知 → 仍給提醒" "已交接過" "$(sysmsg "$out7d")"
+check "系統注入訊息不被當成 handoff 呼叫" EMPTY \
+    "$(lacks "已收到你的 handoff 請求" "$out7d")"
+# <system-reminder> 這類注入同樣不可被 block
+check "已交接過 + system-reminder 注入 → 不被 block" EMPTY \
+    "$(printf '%s' "$(run sess-7e "$TMP/t7.jsonl" "" "" "<system-reminder>foo</system-reminder>")" \
+       | jq -r '.decision // ""')"
 make_transcript 310000 "" "$TMP/t7b.jsonl"
 append_handoff_call "$TMP/t7b.jsonl" handoff
 check "skill 名寫成 handoff（未加 plugin 前綴）也認得" "已交接過" \

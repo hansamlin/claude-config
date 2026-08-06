@@ -198,7 +198,9 @@ step "完成"
 cat <<EOF
   驗證：
     bash "$REPO/plugins/context-handoff/scripts/check.test.sh"
-    在 Claude Code 裡執行 /hooks 確認 Stop 與 PostCompact 有出現
+    bash "$REPO/plugins/context-handoff/scripts/subagent-check.test.sh"
+    在 Claude Code 裡執行 /hooks 確認 UserPromptSubmit、PreToolUse、
+      SubagentStop、PostCompact 四條都有出現
     ps aux | grep -- '--lsp'   確認 LSP 跑的是 tsgo
 
   之後 repo 有更新時，plugin 部分用 /plugin marketplace update 即可，

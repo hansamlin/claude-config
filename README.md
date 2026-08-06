@@ -30,7 +30,7 @@ private repo 可以直接當 marketplace source——Claude Code 用 SSH clone�
 
 | Plugin | 提供 |
 | --- | --- |
-| `context-handoff` | `UserPromptSubmit` / `PostCompact` hook + `handoff` skill |
+| `context-handoff` | `UserPromptSubmit` / `PreToolUse` / `SubagentStop` / `PostCompact` hook + `handoff` skill |
 | `tsgo-lsp` | TypeScript 7 native (tsgo) LSP server |
 
 ### install.sh 負責的（plugin 管不到）
@@ -126,11 +126,40 @@ hook 與 skill 放在同一個 plugin 裡是必要的：hook 觸發時會叫 Cla
 - transcript 過濾 `isSidechain != true`——不過濾的話，只要派過一次 subagent，最後一筆就是 subagent 的小 context，門檻永遠到不了且**完全靜默**
 - 用量從最後一個 compact 邊界（頂層 `isCompactSummary == true`）之後重算——見上面〈compact 邊界必須尊重〉
 
+### sub agent 的 context 也會爆（`PreToolUse` + `SubagentStop`）
+
+主 session 的機制對 sub agent 完全無效——`check.sh` 看到 `agent_id` 就退出，而且 sub agent 有自己的 transcript。實際上 sub agent 一樣會衝破 300k，然後帶著一個做到一半、卻寫得像做完的結論回報給主 agent。
+
+sub agent 的生命週期裡沒有「使用者送出訊息」可攔，`Stop` 類事件又太晚（那時半成品已經交出去了）。唯一每一輪都會經過的關卡是**工具呼叫**，所以用 `PreToolUse`：
+
+1. payload 沒有 `agent_id`（＝主 agent 的工具呼叫）→ 立刻退出。這條路徑每一次工具呼叫都會走到，判定放在最前面
+2. 有 `agent_id` → 推導 sub agent 專屬 transcript，算最後一筆 assistant 的 usage 總和，未達門檻就放行
+3. 達門檻 → `permissionDecision: "deny"`，用 `permissionDecisionReason` 告訴這個 sub agent：停止原本的工作、把交接內容寫進 `$STATE_DIR/subagent-handoff-<agent_id>.md`、最終回覆只回報「沒做完 + 交接檔路徑 + 請主 agent 以相同 agent_type/模型重派」
+
+`PreToolUse` **沒有** `additionalContext` 這種「不擋、只注入」的管道（那是 `UserPromptSubmit` 才有的），deny 的 reason 是唯一能在 sub agent 迴圈中途對它下指示、而且模型看得到的通道。代價是那次工具呼叫會被取消，所以 reason 必須明講「原本的工作不用做了」，否則模型會以為只是這一步被擋、換個工具再試。
+
+**只 deny 一次**，以 `$STATE_DIR/sa-<agent_id>` 記帳。deny 是無差別的——擋的是「這次工具呼叫」而不是「某類工具」。持續 deny 的話，sub agent 連寫交接檔要用的 `Write` 都會被擋，直接死鎖。記帳一定要在 deny **之前**且失敗就整個放棄（fail open）：整套保證都建立在那個檔存在上，先 deny 後記帳等於把死鎖賭在檔案系統上。
+
+`SubagentStop` 是這套機制真正的保險。deny 的 reason 只是寫給模型看的字串，sub agent 會不會照著回報「我沒做完」純粹是順從性；它完全可能把半成品包裝成成品。`SubagentStop` 讀的是 `sa-<agent_id>` 這個**事實**，並用 `hookSpecificOutput.additionalContext`（會出現在父對話，主 agent 看得到）直說：任務尚未完成、交接檔在哪、交接檔到底有沒有被寫出來、請以相同 `agent_type` 與相同模型等級重派並要求新 agent 先讀該檔。清掉 `sa-*` 但**絕不刪交接檔**——那是主 agent 接下來唯一的輸入。
+
+不用 `decision: "block"`：block 的語意是「不准結束、繼續做」，但這個 sub agent 就是因為 context 滿了才被攔下來的，逼它繼續只會更糟。要接手的是**新的** sub agent。
+
+幾個刻意不做的事：
+
+- **不叫 sub agent 去跑 `handoff` skill**。那支寫的是專案長期記憶，而且會按任務主題去重、就地更新既有 `type: project` 記憶檔。sub agent 手上的是任務內的接力棒，混進去會汙染甚至覆蓋主線專案記憶
+- **不套 `isSidechain != true` 過濾**。那是給主 transcript 用的；sub agent 專屬檔整份都是 `isSidechain: true`，套上去會把資料濾光、門檻永遠不觸發且完全靜默
+- **不做 compact 邊界歸零**。sub agent transcript 會不會出現 `isCompactSummary` 沒有樣本可驗，就算出現，最壞只是誤觸發一次 deny——deny 對同一個 `agent_id` 只會發生一次，是自限的
+- **`PostCompact` 不清 `sa-*`**。那講的是主 session 被壓縮，與任何 sub agent 的 context 無關；清掉等於對一個 context 仍然滿的 sub agent 重新武裝 deny
+- **不在 `PreToolUse` 裡掃過期狀態檔**。`check.sh` 已經在掃了；這支是每次工具呼叫都跑，多一個 `find` 就是把成本乘上工具呼叫次數
+
+所有狀態一律以 `agent_id` 當 key，不可用 `session_id`——本機允許 20 個並發 sub agent，用 session 當 key 會互相汙染。
+
 ### 設定
 
 | 環境變數 | 預設 | 說明 |
 | --- | --- | --- |
-| `CC_HANDOFF_THRESHOLD` | `300000` | 觸發門檻（token）。1M context window 的 30% |
+| `CC_HANDOFF_THRESHOLD` | `300000` | 主 session 的觸發門檻（token）。1M context window 的 30% |
+| `CC_HANDOFF_SUBAGENT_THRESHOLD` | `300000` | sub agent 的觸發門檻。與主 session 分開，因為兩者調整的動機不同（一個是使用者體感，一個是任務切段粒度） |
 | `CC_HANDOFF_MAX_NAGS` | `3` | 最多主動要求交接幾次，超過就只提醒 |
 | `CC_HANDOFF_LOOKBACK` | `300` | 往回掃幾筆 transcript 找 handoff 執行記錄 |
 | `CC_HANDOFF_DISABLE` | — | 設 `1` 完全停用 |
@@ -157,9 +186,12 @@ CC_HANDOFF_THRESHOLD=5000 CC_HANDOFF_TRACE=/tmp/upst.jsonl claude
 
 ```bash
 bash plugins/context-handoff/scripts/check.test.sh
+bash plugins/context-handoff/scripts/subagent-check.test.sh
 ```
 
-13 組案例、35 條斷言，涵蓋 subagent 排除（且 `--agent` 主 session 不可誤殺）、sidechain 過濾、未達門檻靜默、達門檻注入指示、模型忽略時繼續催、催滿上限降級、handoff 跑過就收手、compact 邊界重算、bg session 必須觸發的回歸、PostCompact reset、停用開關與輸出合法性。全程在 `mktemp` 目錄裡用 `CC_HANDOFF_STATE_DIR` 隔離，不會動到真實狀態。
+`subagent-check.test.sh` 有 17 組案例、52 條斷言，涵蓋主 agent 工具呼叫必須零副作用、未達門檻靜默、達門檻 deny 且 reason 含交接檔絕對路徑與重派語意、**第二次工具呼叫必須放行的死鎖回歸**、寫交接檔本身不可被擋、`transcript_path` 給主檔或給專屬檔都要算得到量、推導不到檔案要靜默、並發 `agent_id` 狀態互不干擾、`SubagentStop` 的通知與清理（交接檔不可刪）、沒寫出交接檔要警告、`agent_id` 路徑注入防護與停用開關。
+
+`check.test.sh` 有 17 組案例、70 條斷言，涵蓋 subagent 排除（且 `--agent` 主 session 不可誤殺）、sidechain 過濾、未達門檻靜默、達門檻注入指示、模型忽略時繼續催、催滿上限降級、handoff 跑過就收手、compact 邊界重算、bg session 必須觸發的回歸、PostCompact reset、停用開關與輸出合法性，以及**這則 prompt 本身就是 handoff 呼叫時不再重複催**（含句尾 `/handoff`、純文字整則相等、談論 handoff 的句子不可誤命中）與**已交接後硬中斷**（含背景任務通知不可被 block 的例外）。全程在 `mktemp` 目錄裡用 `CC_HANDOFF_STATE_DIR` 隔離，不會動到真實狀態。
 
 ### 已知限制
 
@@ -167,6 +199,11 @@ bash plugins/context-handoff/scripts/check.test.sh
 - **compact 後第一則訊息一律放行**：邊界之後還沒有 usage 可讀，寧可漏一次也不要用陳舊數字誤觸發。下一輪就會恢復正常判斷。
 - **注入的是指示不是強制**：`additionalContext` 讓 Claude 看到並據此行動，但沒有機制能保證它一定照做。Hook 無法直接呼叫工具或 skill，這是 hooks 的設計邊界。所以才用「transcript 查得到 handoff 執行記錄」當收手條件，而不是「我催過了」。
 - `trigger: "auto"`（自動壓縮）未實測，只驗過 `manual`。reset script 不讀 `trigger` 欄位，行為應該一致；但 compact 邊界的偵測靠頂層 `isCompactSummary`，本機能找到的 compact transcript 全是 `manual`，auto 壓縮是否寫入相同標記沒有樣本可驗。若 auto 用了別的形狀，那條路徑會退回「用陳舊數字誤觸發」——不會比修正前更糟，但也不會被擋下。
+- **sub agent 那條鏈上有三個環節只是模型順從性**：(a) sub agent 收到 deny reason 後有沒有真的去寫交接檔（`SubagentStop` 會查檔案在不在，至少能讓主 agent 知道沒寫）、(b) 交接檔內容夠不夠讓人接手、(c) **主 agent 看到 `additionalContext` 之後有沒有真的照著重派**——最後這個是整條鏈最弱的一環，`additionalContext` 是給主 agent 的指示，不是強制
+- **`PreToolUse` payload 的 `transcript_path` 在 sub agent 內指向主檔還是專屬檔未實測**，所以兩種形狀都涵蓋；兩個候選都不存在就靜默退出。這條路徑的失敗模式是「永遠不觸發且完全靜默」，要確認它有在跑就掛 `CC_HANDOFF_TRACE`
+- **payload 的 `agent_id` 是否等於檔名裡的 `<agent_id>` 未直接實測**：只驗過 transcript 檔內 `agentId` 欄位與檔名一致（`agent-a12a9e71e33f24f4f.jsonl` ↔ `agentId: a12a9e71e33f24f4f`）
+- **deny 的 `permissionDecisionReason` 會不會被送到 sub agent 的模型面前未實測**。已實測的是「主 agent 收到 deny 時看得到 reason」。若 sub agent 只收到「工具呼叫被取消」而看不到理由，它不會去寫交接檔——但 `SubagentStop` 那條保險仍然成立（狀態檔是機制寫的），主 agent 會收到「⚠️ 交接檔不存在」的警告並照樣重派，只是接力棒是空的
+- **`SubagentStop` 沒觸發的話 `sa-<agent_id>` 會殘留**。殘留無害（deny 已經發過，最多是少一次通知、不會死鎖），但也不保證會被清掉：`check.sh` 那支 7 天 `find` 掛在「主 session 已達門檻」的路徑上，主 session 從沒破過門檻的機器上等於不會跑
 - **改了 hook 行為記得 bump `plugin.json` 的 `version`**：plugin 快取是按版本號分目錄的（`~/.claude/plugins/cache/sam-tools/context-handoff/<version>/`），版本沒動的話 `/plugin marketplace update` 之後可能仍在跑舊碼——又是一個「裝好了、沒錯誤、行為是舊的」情境。
 
 ## tsgo-lsp
