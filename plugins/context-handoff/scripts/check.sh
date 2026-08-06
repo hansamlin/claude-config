@@ -77,6 +77,77 @@ esac
 
 [ "$used" -lt "$THRESHOLD" ] && exit 0
 
+# 這則 prompt 本身是不是 handoff 呼叫？
+#
+# 欄位名：實測 2026-08-06（Claude Code 2.1.223）攔到的 UserPromptSubmit payload
+# 帶的是 `prompt`。官方文件所載的 `prompt_text` 與本測試舊版 run() 用的
+# `user_message` 都不符實際（後者讓那條測試一直是 vacuous）。故以 `prompt`
+# 為主，其餘兩個保留為防禦性 fallback，日後欄位改名時還有一層緩衝。
+#（jq 的 // 只在 null/false 時往下掉，「存在但空字串」的 .prompt 會蓋掉後面
+#  的 fallback；既然 .prompt 已是實測確認的欄位，這個順序正是我們要的。）
+prompt_text=$(jq_in '(.prompt // .prompt_text // .user_message // "")
+                     | gsub("^\\s+|\\s+$"; "")')
+
+# 比對規則（依實測的使用者輸入形態調校）：
+#
+#  1. 斜線形式 `/handoff`、`/context-handoff:handoff`——**出現在訊息任何位置**
+#     都算。實測使用者的 shell history，句尾附加才是最常見的用法
+#     （「MR 都合併了，更新記憶然後 /handoff」「已合併 /handoff」），只認
+#     行首開頭會漏掉一大半，等於這個機制做了等於沒做。
+#     後綴需為字串結尾或非文字字元，`/handoffxyz` 不算。
+#     **前綴刻意不設限**：中文語境常寫成「然後/handoff」「，/handoff」，前面
+#     直接接的是中文字或全形標點，用 ASCII 空白／詞邊界去卡會在 UTF-8 locale
+#     下行為不定，反而漏認。
+#
+#  2. 純文字形式 `handoff`、`交接`——只認整則 trim 後**完全相等**，不做部分
+#     比對。這是最關鍵的收斂：一旦放寬成 substring，「以後不要再自動 handoff
+#     了」「hook 會在超過 300k 時觸發 handoff skill」這種在「談論」handoff 的
+#     句子全會命中，門檻機制就被使用者的一句閒聊整個關掉。
+#
+# 不需要處理 slash command 的「展開／包裝」形式：已於 2026-08-06（Claude Code
+# 2.1.223）實測確認，行首 slash command 送進 hook 時 `.prompt` 就是原字面
+# `/handoff`，沒有 <command-name> 之類的包裝。少一個分支就少一處會腐爛的猜測。
+#
+# 已知會誤命中但刻意不處理：「/handoff skill 有被收入進去嗎」這種用斜線形式在
+# 發問的句子。誤命中的代價只是少一次自動催告、使用者仍看得到用量提醒；漏命中
+# 的代價是使用者主動交接卻還被叫去交接。取捨明確偏向不增加複雜度。
+HANDOFF_SLASH_RE='/(handoff|context-handoff:handoff)([^A-Za-z0-9_-]|$)'
+
+# 實測發現：UserPromptSubmit **不等於「真人送出訊息」**。背景任務跑完的通知也
+# 走同一條路進來，prompt 長這樣：
+#   <task-notification>\n<task-id>…</task-id>…<status>completed</status>…</task-notification>
+# 這類系統注入的訊息不是使用者在交派工作，不可當成 handoff 呼叫，更不可被
+# decision:"block" erase 掉——那會讓主 agent 永遠收不到自己派出去的背景工作結果。
+# 用「trim 後以尖角標籤開頭」一併涵蓋 <task-notification> / <system-reminder>
+# 這類注入；真人打字幾乎不會以 <foo> 起頭。
+SYSTEM_INJECTED_RE='^<[A-Za-z][A-Za-z0-9_-]*>'
+is_system_injected_prompt() { [[ "$1" =~ $SYSTEM_INJECTED_RE ]]; }
+
+is_handoff_prompt() {
+    local p="$1"
+    is_system_injected_prompt "$p" && return 1
+    [[ "$p" =~ $HANDOFF_SLASH_RE ]] && return 0
+    case "$p" in
+        handoff | 交接) return 0 ;;
+    esac
+    return 1
+}
+
+# 位置至關重要：必須排在下面「已交接過就 block」那個分支**之前**。
+# 那個分支會硬性阻斷所有 prompt，若本判定排在它後面，使用者交接完又多做了
+# 幾件事、想再交接一次時就會被永久鎖死——這裡等於是那道封鎖的逃生口。
+#
+# 命中時只給 systemMessage：不注入 additionalContext（叫一則已經是 /handoff
+# 的 prompt「先別做使用者要求的工作、去呼叫 handoff skill」毫無意義，語意還
+# 重複）、不給 decision（skill 要有 turn 才跑得起來）、也不寫 nag 檔（那是
+# 給「使用者沒主動交接」用的催告配額，使用者自己交接不該扣額度）。
+if is_handoff_prompt "$prompt_text"; then
+    jq -n --argjson used "$used" --argjson threshold "$THRESHOLD" '
+    { systemMessage: ("⚠️ 已收到你的 handoff 請求。context 目前約 \($used) tokens"
+                      + "（門檻 \($threshold)）；交接完成後請開新 session 接續。") }'
+    exit 0
+fi
+
 # handoff 到底跑了沒，以 transcript 為準而不是「我催過了」為準。
 # additionalContext 只是注入指示，沒有任何機制保證 Claude 一定照做；
 # 催一次就記帳收手的話，模型忽略一次就等於這個 session 再也不會交接。
@@ -91,8 +162,23 @@ if [ "$(tail -n "$LOOKBACK" "$transcript" 2>/dev/null | jq -r '
          | .input.skill // "")
     else empty end
 ' 2>/dev/null | awk '/^R$/ { done = 0; next } /handoff/ { done = 1 } END { print done + 0 }')" = "1" ]; then
-    jq -n --argjson used "$used" '
-    { systemMessage: "⚠️ 已交接過，context 目前約 \($used) tokens，建議盡快開新 session。" }'
+    # 這裡用 decision:"block" 是對的，和下面「達門檻、尚未交接」那個分支的
+    # 理由正好相反：那邊還需要一個 turn 讓 Claude 去跑 handoff skill，block
+    # 掉就永遠交接不成；這邊 skill 已經跑完了，再給 turn 只會讓使用者交接後
+    # 又順手多做幾件事，context 繼續長。block 會 erase 這則 prompt 並把
+    # reason 顯示給使用者，Claude 不會有 turn，才是真正的中斷。
+    #
+    # 例外：系統注入的通知（背景任務完成通知等，見上方 is_system_injected_prompt）
+    # 不可 block——那會讓主 agent 收不到自己派出去的背景工作結果。只提醒不中斷。
+    if is_system_injected_prompt "$prompt_text"; then
+        jq -n --argjson used "$used" '
+        { systemMessage: "⚠️ 已交接過，context 目前約 \($used) tokens，建議盡快開新 session。" }'
+    else
+        jq -n --argjson used "$used" '
+        { decision: "block",
+          reason: "⚠️ 已交接過，context 目前約 \($used) tokens，建議盡快開新 session。本次請求未執行。",
+          systemMessage: "⚠️ 已交接過，context 目前約 \($used) tokens，建議盡快開新 session。" }'
+    fi
     exit 0
 fi
 
