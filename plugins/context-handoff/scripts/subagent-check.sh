@@ -202,6 +202,10 @@ handoff_file="$STATE_DIR/subagent-handoff-$agent_id.md"
 
 # 已經發過指示 → 一律放行。放在讀 transcript 之前：這個分支是超標之後每一次
 # 工具呼叫的必經之路，不該為它付 jq 掃整個 transcript 的錢。
+#
+# ⚠️ 這一行是**便宜快取，不是權威**。它與下面的寫入合起來是 check-then-act，
+# 中間隔著一次掃 transcript 的 jq，不是原子操作。權威是下面那個 noclobber
+# 寫入（見該處說明）；這行留著純粹是為了不讓熱路徑付掃 transcript 的錢。
 [ -e "$state" ] && exit 0
 
 # deny 當下要寫的就是交接檔本身 → 放行，否則第一步就自相矛盾。
@@ -251,8 +255,38 @@ esac
 # 或寫失敗了還照樣 deny，接下來每一次工具呼叫都會重新 deny，連交接檔的 Write
 # 都會被擋——正是上面要避免的死鎖。fail open 最多損失一次交接，fail closed
 # 會直接吊死一個 sub agent。
+#
+# 為什麼是 noclobber 而不是直接 `>`（＝為什麼要原子）：
+#   PreToolUse hook **確實會並行執行**。這是實測過的，不是推測：
+#     實驗：一個 sub agent 在同一則訊息裡發出多個平行 Read，hook 裡寫入帶
+#           微秒時間戳的 start/end，中間 sleep 1。
+#     結果：三個 hook 行程兩兩重疊（第 2 個在第 1 個 end 之前 start，第 3 個
+#           在第 2 個 end 之前 start）→ runtime **不序列化**這批 hook。
+#   binary 也解釋了原因（Claude Code 2.1.223）：工具排程器的 `processQueue`
+#   對每個 queued 工具呼叫 `executeTool`，而 `executeTool` 只把狀態設成
+#   executing、啟動一個**不被 await 的** async IIFE 就返回；`canExecuteTool`
+#   在「目前執行中的全是 concurrency-safe」時允許下一個直接開跑。每個工具
+#   完整的生命週期（含權限判定與 hook）都在那個 IIFE 裡，所以會重疊。
+#   Read/Grep/Glob 這類 readOnly 工具是 concurrency-safe；Bash 不是——這正是
+#   為什麼過去所有驗收 trace（全是 Bash 序列）從沒觸發過這條路徑。
+#
+#   ⚠️ 第二個實驗（hook 只跑 50ms、七個平行 Read）**完全沒有重疊**：工具呼叫
+#   的起始間隔是 500~900ms，由模型串流出 tool_use block 的節奏決定，比競態
+#   窗口大兩個數量級。所以這是「保證有例外」而不是「機制會壞」，實務上幾乎
+#   不會發生。之所以還是修，是因為代價近乎為零：
+#
+# 為什麼這不算動熱路徑：
+#   這行排在**所有**早退之後，一個 sub agent 的一生只會走到這裡一次（之後
+#   `[ -e "$state" ]` 那條便宜快取就接手了）。多出來的成本是一個 subshell
+#   fork，只發生在 deny 的那一次，不是每次工具呼叫。
+#
+# 兩種失敗都 fail open：檔案已存在（別人先搶到 → 由它去 deny）與寫不進去
+# （權限/磁碟）在這裡是同一個處理，因為兩者都不該讓這個行程再 deny 一次。
+# 用 subshell 包住 `set -o noclobber`，避免污染腳本其餘部分的重導向行為。
 mkdir -p "$STATE_DIR" 2>/dev/null || exit 0
-printf '%s\n' "${agent_type:-unknown}" > "$state" 2>/dev/null || exit 0
+if ! ( set -o noclobber; printf '%s\n' "${agent_type:-unknown}" > "$state" ) 2>/dev/null; then
+    exit 0
+fi
 
 # 註：續作的 sub agent 是新的 agent_id，若它也超標會寫到另一個
 # subagent-handoff-<新 id>.md。接力鏈靠的是每一代 sub agent 各自在最終回覆裡

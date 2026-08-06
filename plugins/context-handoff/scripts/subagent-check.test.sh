@@ -225,6 +225,34 @@ check "sa-* 是普通檔案，find -type f 掃得到" EMPTY \
 check "同一次清掃不會誤刪還在用的 sa-resume1" "sa-resume1" \
     "$(ls "$CC_HANDOFF_STATE_DIR" | grep sa-resume1)"
 
+echo "── 13b. 並行：同一批工具呼叫同時進來，deny 仍然只能發生一次"
+# PreToolUse hook **確實會並行**（實測：一個 sub agent 發出多個平行 Read，
+# 三個 hook 行程兩兩重疊）。binary 的工具排程器解釋了原因——`executeTool`
+# 啟動一個不被 await 的 async IIFE 就返回，concurrency-safe 的工具（Read /
+# Grep / Glob 這類 readOnly；Bash 不是）會直接疊著跑。
+#
+# 記帳若是 check-then-act（讀 `[ -e ]` → 掃 transcript → 寫），同一批的多個
+# hook 會全部判定「還沒記過」→ **全部 deny** → 那一批工具呼叫全被取消，
+# sub agent 收到 N 份重複的交接指示。原子寫入把它收斂回恰好一次。
+#
+# 這裡用背景 subshell 同時起 N 個 hook 行程來逼出競態。收斂性不靠時序巧合：
+# 不論排程如何，通過的定義都是「deny 恰好 1 次」。
+make_sa_transcript "$TMP/p13b/sess/subagents/agent-race.jsonl" 999999 race
+RACE_N=8
+mkdir -p "$TMP/p13b/out"
+for i in $(seq 1 "$RACE_N"); do
+    ( run "$TMP/p13b/sess.jsonl" race general-purpose > "$TMP/p13b/out/$i" 2>&1 ) &
+done
+wait
+race_denies=$(grep -l '"deny"' "$TMP/p13b/out"/* 2>/dev/null | wc -l | tr -d ' ')
+check "$RACE_N 個並行 hook → deny 恰好 1 次" "1" "$race_denies"
+check "並行後 state 檔存在且只有一個" "1" \
+    "$(ls "$CC_HANDOFF_STATE_DIR" | grep -c '^sa-race$' | tr -d ' ')"
+# 反證：這條路徑真的有被走到（8 個全靜默的話上面那條會是 0 而不是 1，
+# 但額外驗一次 state 內容，確認 deny 的那個行程真的把記帳寫進去了）
+check "記帳內容是 agent_type" "general-purpose" \
+    "$(cat "$CC_HANDOFF_STATE_DIR/sa-race" 2>/dev/null)"
+
 echo "── 14. CC_HANDOFF_DISABLE=1 → 完全靜默、且不留任何副作用"
 make_sa_transcript "$TMP/p14/sess/subagents/agent-off.jsonl" 999999 off
 check "check 停用" EMPTY "$(CC_HANDOFF_DISABLE=1 run "$TMP/p14/sess.jsonl" off general-purpose 2>&1)"

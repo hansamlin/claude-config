@@ -153,6 +153,16 @@ hookEventName:E.literal("PreToolUse"),permissionDecision:...,permissionDecisionR
 
 **只 deny 一次**，以 `$STATE_DIR/sa-<agent_id>` 記帳。deny 是無差別的——擋的是「這次工具呼叫」而不是「某類工具」。持續 deny 的話，sub agent 連寫交接檔要用的 `Write` 都會被擋，直接死鎖。記帳一定要在 deny **之前**且失敗就整個放棄（fail open）：整套保證都建立在那個檔存在上，先 deny 後記帳等於把死鎖賭在檔案系統上。
 
+記帳的寫入是**原子的**（`noclobber`），不是 check-then-act。因為 **PreToolUse hook 確實會並行執行**——這是實測結論，不是推測：
+
+> 讓一個 sub agent 在同一則訊息裡發出三個平行 `Read`，hook 內寫入帶微秒時間戳的 start/end、中間 `sleep 1`。結果三個 hook 行程**兩兩重疊**（第 2 個在第 1 個 end 之前 start，第 3 個在第 2 個 end 之前 start）。runtime 不序列化這批 hook。
+
+binary 解釋了原因：工具排程器的 `processQueue` 對每個 queued 工具呼叫 `executeTool`，而 `executeTool` 只把狀態設成 `executing`、啟動一個**不被 `await` 的** async IIFE 就返回；`canExecuteTool` 在「目前執行中的全是 concurrency-safe」時允許下一個直接開跑。每個工具完整的生命週期（含權限判定與 hook）都在那個 IIFE 裡，所以會重疊。`Read`/`Grep`/`Glob` 這類 `readOnlyHint` 工具是 concurrency-safe，**`Bash` 不是**——這正是為什麼過去所有驗收 trace（清一色是序列的 `Bash`）從沒觸發過這條路徑。
+
+若記帳是 check-then-act（讀 `[ -e ]` → 掃 transcript → 寫），同一批的多個 hook 會全部判定「還沒記過」→ **全部 deny** → 那一批工具呼叫全被取消，sub agent 收到 N 份重複的交接指示。用 8 個並行行程重現，check-then-act 穩定跑出 8 次 deny，`noclobber` 是 1 次。
+
+⚠️ 但這是「保證有例外」而不是「機制會壞」。第二個實驗（hook 只跑 50ms、七個平行 `Read`）**完全沒有重疊**：工具呼叫的起始間隔是 500~900ms，由模型串流出 `tool_use` block 的節奏決定，比競態窗口大兩個數量級。之所以還是修，是因為代價近乎為零——那行排在**所有**早退之後，一個 sub agent 的一生只會走到一次，多出來的只有一個 subshell fork。`[ -e "$state" ]` 那行仍然留著當**便宜快取**（原子寫入是**權威**），把它拿掉會讓每次工具呼叫都付掃 transcript 的錢。實測熱路徑成本未變：主 agent 路徑 12.0 ms/次、記帳已存在的 sub agent 路徑 11.7 ms/次。
+
 **記帳一旦寫下就沒有任何人會刪**（2.3.0 起）。2.2.x 有一支 `SubagentStop` hook 專門在 sub agent 收工時 `rm` 掉 `sa-<agent_id>`，理由是「`agent_id` 萬一被重用，不要吃掉新一輪的交接機會」。那條註冊已經**整條移除**，因為它與「只 deny 一次」的保證互相衝突：
 
 `agent_id` 被「重用」最現實的場景不是碰撞，是**同一個 sub agent 被續跑**——主 agent 用 `SendMessage` 續接既有 agent，或任何 resume 路徑。binary 裡 `SubagentStop` 的 payload 帶 `stop_hook_active` 且可以為 `true`，代表「續跑後再次觸發 SubagentStop」是被設計進去的情境；過去實驗也實際觀察到同一個 `agent_id` 出現兩次 `SubagentStop`。續跑時 sub agent 的 context **還是滿的**，記帳卻已經被刪掉，於是它下一次工具呼叫會**再被 deny 一次**、再被要求寫一次交接檔。
