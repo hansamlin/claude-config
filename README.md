@@ -30,7 +30,7 @@ private repo 可以直接當 marketplace source——Claude Code 用 SSH clone�
 
 | Plugin | 提供 |
 | --- | --- |
-| `context-handoff` | `UserPromptSubmit` / `PreToolUse` / `SubagentStop` / `PostCompact` hook + `handoff` skill |
+| `context-handoff` | `UserPromptSubmit` / `PreToolUse` / `PostCompact` hook + `handoff` skill |
 | `tsgo-lsp` | TypeScript 7 native (tsgo) LSP server |
 
 ### install.sh 負責的（plugin 管不到）
@@ -126,7 +126,7 @@ hook 與 skill 放在同一個 plugin 裡是必要的：hook 觸發時會叫 Cla
 - transcript 過濾 `isSidechain != true`——不過濾的話，只要派過一次 subagent，最後一筆就是 subagent 的小 context，門檻永遠到不了且**完全靜默**
 - 用量從最後一個 compact 邊界（頂層 `isCompactSummary == true`）之後重算——見上面〈compact 邊界必須尊重〉
 
-### sub agent 的 context 也會爆（`PreToolUse` + `SubagentStop`）
+### sub agent 的 context 也會爆（`PreToolUse`）
 
 主 session 的機制對 sub agent 完全無效——`check.sh` 看到 `agent_id` 就退出，而且 sub agent 有自己的 transcript。實際上 sub agent 一樣會衝破 300k，然後帶著一個做到一半、卻寫得像做完的結論回報給主 agent。
 
@@ -153,16 +153,27 @@ hookEventName:E.literal("PreToolUse"),permissionDecision:...,permissionDecisionR
 
 **只 deny 一次**，以 `$STATE_DIR/sa-<agent_id>` 記帳。deny 是無差別的——擋的是「這次工具呼叫」而不是「某類工具」。持續 deny 的話，sub agent 連寫交接檔要用的 `Write` 都會被擋，直接死鎖。記帳一定要在 deny **之前**且失敗就整個放棄（fail open）：整套保證都建立在那個檔存在上，先 deny 後記帳等於把死鎖賭在檔案系統上。
 
-`SubagentStop` 的唯一作用是**清掉 `sa-<agent_id>`**，而且**在任何路徑下 stdout 與 stderr 都必須是空的、exit code 必須是 0**。清掉 `sa-*` 但**絕不刪交接檔**——那是主 agent 接下來唯一的輸入。
+**記帳一旦寫下就沒有任何人會刪**（2.3.0 起）。2.2.x 有一支 `SubagentStop` hook 專門在 sub agent 收工時 `rm` 掉 `sa-<agent_id>`，理由是「`agent_id` 萬一被重用，不要吃掉新一輪的交接機會」。那條註冊已經**整條移除**，因為它與「只 deny 一次」的保證互相衝突：
 
-2.2.0 曾經讓這支 hook 輸出 `hookSpecificOutput.additionalContext` 去通知主 agent，線上實測是災難：已經結束的 sub agent 被**續跑**；而這支 hook 又剛好把 `sa-<agent_id>` 刪了，所以它下一次工具呼叫時「只 deny 一次」的記帳不存在 → 重新 deny → 再結束 → 再被續跑，滾成無限迴圈。對照實驗（唯一變因是 stdout，`rm` 兩版都保留）：
+`agent_id` 被「重用」最現實的場景不是碰撞，是**同一個 sub agent 被續跑**——主 agent 用 `SendMessage` 續接既有 agent，或任何 resume 路徑。binary 裡 `SubagentStop` 的 payload 帶 `stop_hook_active` 且可以為 `true`，代表「續跑後再次觸發 SubagentStop」是被設計進去的情境；過去實驗也實際觀察到同一個 `agent_id` 出現兩次 `SubagentStop`。續跑時 sub agent 的 context **還是滿的**，記帳卻已經被刪掉，於是它下一次工具呼叫會**再被 deny 一次**、再被要求寫一次交接檔。
+
+用 2.2.1 的兩支腳本直接重現（同一份超標 transcript，唯一變因是中間有沒有跑 `subagent-stop.sh`）：
+
+| 版本 | 呼叫 1 | 呼叫 2 | 收工 | 續跑後呼叫 3 | 續跑後呼叫 4 |
+| --- | --- | --- | --- | --- | --- |
+| 2.2.1（stop hook 會 `rm`） | **deny** | 放行 | `rm sa-<id>` | **deny**（第二次！） | 放行 |
+| 2.3.0（無 stop hook） | **deny** | 放行 | — | 放行 | 放行 |
+
+真正的 `agent_id` 碰撞機率極低（隨機十六進位識別字），殘留檔本身也無害（deny 已經發過，不會死鎖）。取捨明確：不刪。**附帶好處是整條 `SubagentStop` 註冊可以拿掉——少一個事件、少一個會吐輸出的風險面**，而「任何輸出都會讓 sub agent 續跑」正是 2.2.0 那場事故的根源。代價是 `sa-*` 的回收完全依賴 `check.sh` 的 7 天清掃，所以那行 `find` 同時被移到所有早退**之前**（見下）。
+
+以下這段歷史仍然值得留著，因為它是「為什麼絕不可以再往 `SubagentStop` 送任何東西」的一手證據。2.2.0 曾經讓這支 hook 輸出 `hookSpecificOutput.additionalContext` 去通知主 agent，線上實測是災難：已經結束的 sub agent 被**續跑**；而這支 hook 又剛好把 `sa-<agent_id>` 刪了，所以它下一次工具呼叫時「只 deny 一次」的記帳不存在 → 重新 deny → 再結束 → 再被續跑，滾成無限迴圈。對照實驗（唯一變因是 stdout，`rm` 兩版都保留）：
 
 | stdout | SubagentStop 次數 | deny 次數 | 結果 |
 | --- | --- | --- | --- |
 | 有 | ~30 | **32** | 跑不完，sub agent 自己在 transcript 最後寫下「System failure: Context loop infinite」 |
 | 無 | 每次派工 1 | **1** | 主 agent 正常收到回報並重派，整輪乾淨結束 |
 
-元凶是 hook 的輸出本身，不是 `rm`（`rm` 只是放大器）。
+元凶是 hook 的輸出本身，不是 `rm`（`rm` 只是放大器）。2.3.0 把兩者都拿掉了。
 
 **根因不是「harness 不認得那個形狀」，而是我們選了一個語意本來就等於「繼續跑」的欄位。** SubagentStop 的 `additionalContext` 是合法欄位，schema 上的 `.describe()` 寫得非常清楚：
 
@@ -204,6 +215,12 @@ updatedToolOutput:E.unknown().describe("Replaces the tool output before it is se
 - **`PostCompact` 不清 `sa-*`**。那講的是主 session 被壓縮，與任何 sub agent 的 context 無關；清掉等於對一個 context 仍然滿的 sub agent 重新武裝 deny
 - **不在 `PreToolUse` 裡掃過期狀態檔**。`check.sh` 已經在掃了；這支是每次工具呼叫都跑，多一個 `find` 就是把成本乘上工具呼叫次數
 
+### 7 天清掃必須排在所有早退之前
+
+`check.sh` 的 `find "$STATE_DIR" -maxdepth 1 -type f -mtime +7 -delete` 在 2.2.x 排在三個 early exit **之後**（未達門檻早退、`/handoff` 逃生口、已交接就 block），所以它只在「已達門檻 **且** 這則不是 handoff **且** 尚未交接過」這條窄路徑上跑：**一旦該 session 交接過就再也不跑**，主 session 從沒破過門檻的機器上等於完全不跑。受害的不只 1 byte 的 `sa-*`，還有可能好幾 KB 的 `subagent-handoff-*.md`。
+
+2.3.0 起它排在所有早退之前（只落後於 `CC_HANDOFF_DISABLE` 與讀 stdin），每一則使用者訊息都跑一次。對十幾個檔的單層目錄，`find` 是微秒級。這在 `SubagentStop` 移除之後從「殘留垃圾」升級成 `sa-*` 的**唯一**回收路徑，所以四條早退路徑在測試裡各驗一次。
+
 所有狀態一律以 `agent_id` 當 key，不可用 `session_id`——本機允許 20 個並發 sub agent，用 session 當 key 會互相汙染。
 
 ### 設定
@@ -242,9 +259,13 @@ bash plugins/context-handoff/scripts/check.test.sh
 bash plugins/context-handoff/scripts/subagent-check.test.sh
 ```
 
-`subagent-check.test.sh` 有 25 組案例、75 條斷言，涵蓋主 agent 工具呼叫必須零副作用、未達門檻靜默、達門檻 deny 且 reason 含交接檔絕對路徑與重派語意、**第二次工具呼叫必須放行的死鎖回歸**、寫交接檔本身不可被擋、`transcript_path` 給主檔或給專屬檔都要算得到量、推導不到檔案要靜默、並發 `agent_id` 狀態互不干擾、**`SubagentStop` 在所有路徑下 stdout 與 stderr 都必須為空、exit code 必須是 0**（交接檔不可刪、state 一定要清）、**兩條 skip 條件的正反向**（清單命中就不攔、比對必須是整個 token 相等而不能寫成 substring/prefix、`CC_HANDOFF_SUBAGENT_SKIP_TYPES` 必須真的可覆寫；`permission_mode=plan` 不攔、其餘 mode 一律照常 deny）、`agent_id` 路徑注入防護與停用開關，以及一組**跨檔回歸**：讓 `subagent-check.sh` 真的寫出 `sa-<agent_id>`，再跑 `subagent-stop.sh`，斷言 stop 無輸出且 state 已移除。最後這組是針對「52 條全綠卻仍漏掉無限迴圈」補的——那個 bug 出在兩支腳本的互動上，單獨測任一支都看不到。
+`subagent-check.test.sh` 有 25 組案例、75 條斷言，涵蓋主 agent 工具呼叫必須零副作用、未達門檻靜默、達門檻 deny 且 reason 含交接檔絕對路徑與重派語意、**第二次工具呼叫必須放行的死鎖回歸**、寫交接檔本身不可被擋、`transcript_path` 給主檔或給專屬檔都要算得到量、推導不到檔案要靜默、並發 `agent_id` 狀態互不干擾、**`SubagentStop` 這條風險面必須整條消失**（檔案不存在 + `hooks.json` 不得註冊，另驗其餘三條註冊仍在，以免整份 JSON 壞掉時假綠）、**續跑不可二次 deny**、**兩條 skip 條件的正反向**（清單命中就不攔、比對必須是整個 token 相等而不能寫成 substring/prefix、`CC_HANDOFF_SUBAGENT_SKIP_TYPES` 必須真的可覆寫；`permission_mode=plan` 不攔、其餘 mode 一律照常 deny）、`agent_id` 路徑注入防護與停用開關。
 
-**「stdout 要空」這條規格漏掉 stderr 的代價，是用 mutation 量出來的**：把 `subagent-stop.sh` 的 `exec >/dev/null 2>&1` 改成只塞 stdout 的 `exec >/dev/null`、再讓腳本往 stderr 寫一行字，現行測試 FAIL=12；同一個 mutation、把斷言裡的 `2>&1` 全部拿掉（＝舊測試的形態）只 FAIL=1，而那唯一一條還是新加的「`HOME` 與 `STATE_DIR` 都沒設定」那組（它直接用 `env` 呼叫、不經 helper）。也就是說舊的斷言**一條都抓不到**這種洩漏——同一個教訓的第二次應驗：斷言只覆蓋你寫進去的東西，規格漏了一半時全綠沒有意義。
+壓軸是一組**端到端**斷言：讓 `subagent-check.sh` 自己寫出 `sa-<agent_id>`，然後在六次工具呼叫裡換工具、換 `permission_mode`、把用量再翻倍、跨過「收工 → 被續跑」的分界，斷言**合計恰好 1 次 deny**。它取代了 2.2.x 那組跨檔回歸（`subagent-stop.sh` 已不存在），驗的性質也更強——不是「兩支腳本互動正確」，而是「不論中途發生什麼，deny 只發生一次」。
+
+**每一條新斷言都要有 red 證據**——恆綠是缺陷，不是通過。2.3.0 那批的 mutation 紀錄：把 `SubagentStop` 註冊加回 `hooks.json` → FAIL=1；把 `subagent-stop.sh` 檔案放回來 → FAIL=1；把記帳那行 `printf ... > "$state"` 換成 no-op → FAIL=13（其中「六次呼叫恰好 1 次 deny」變成 6）；把 `check.sh` 的 `find` 移回早退之後 → `check.test.sh` FAIL=4。
+
+這個習慣是 2.2.1 的教訓換來的：當時「stdout 要空」的規格漏了 stderr，把 `subagent-stop.sh` 的 `exec >/dev/null 2>&1` 改成只塞 stdout、再往 stderr 寫一行字，加了 `2>&1` 的新測試 FAIL=12，舊測試形態只 FAIL=1。舊的 17 組斷言**一條都抓不到**——斷言只覆蓋你寫進去的東西，規格漏了一半時全綠沒有意義。
 
 同一輪 mutation 還抓出一個原本沒想到的洞：`set -u` 下 `$HOME` 未設定會**同時**噴 stderr 並以 rc=1 結束，而「非零 exit 也算輸出」是續跑判定裡獨立的一條路徑——所以光加 `exec` 不夠（只加 `exec`、保留 `$HOME`：stderr 確實空了，但 rc=1，sub agent 照樣被續跑），`$HOME` 也必須寫成 `${HOME:-}`。
 
@@ -256,13 +277,13 @@ bash plugins/context-handoff/scripts/subagent-check.test.sh
 - **compact 後第一則訊息一律放行**：邊界之後還沒有 usage 可讀，寧可漏一次也不要用陳舊數字誤觸發。下一輪就會恢復正常判斷。
 - **注入的是指示不是強制**：`additionalContext` 讓 Claude 看到並據此行動，但沒有機制能保證它一定照做。Hook 無法直接呼叫工具或 skill，這是 hooks 的設計邊界。所以才用「transcript 查得到 handoff 執行記錄」當收手條件，而不是「我催過了」。
 - `trigger: "auto"`（自動壓縮）未實測，只驗過 `manual`。reset script 不讀 `trigger` 欄位，行為應該一致；但 compact 邊界的偵測靠頂層 `isCompactSummary`，本機能找到的 compact transcript 全是 `manual`，auto 壓縮是否寫入相同標記沒有樣本可驗。若 auto 用了別的形狀，那條路徑會退回「用陳舊數字誤觸發」——不會比修正前更糟，但也不會被擋下。
-- **主 agent 得知 sub agent 中止，靠的是 sub agent 自己的最終回覆——沒有機械保證的旁路通知**。`SubagentStop` **不能**拿來做這件事（它的任何輸出——stdout、stderr、非零 exit——都等於叫已結束的 sub agent 繼續跑，滾成無限 deny 迴圈，見上）。實測上這條通道是夠用的：主 agent 收得到中止原因、`agentId`、token 數，也會主動重派續作 agent。但它終究是模型順從性，不是機制；有 schema 佐證、值得試的機械化候選是 `Agent` 的 `PostToolUse` + `updatedToolOutput`，尚未實測。
+- **主 agent 得知 sub agent 中止，靠的是 sub agent 自己的最終回覆——沒有機械保證的旁路通知**。`SubagentStop` **不能**拿來做這件事（它的任何輸出——stdout、stderr、非零 exit——都等於叫已結束的 sub agent 繼續跑，滾成無限 deny 迴圈，見上），2.3.0 起連註冊都不存在了。實測上這條通道是夠用的：主 agent 收得到中止原因、`agentId`、token 數，也會主動重派續作 agent。但它終究是模型順從性，不是機制；有 schema 佐證、值得試的機械化候選是 `Agent` 的 `PostToolUse` + `updatedToolOutput`，尚未實測。
 - **sub agent 的最後一輪沒有工具呼叫**（產生最終回覆的那一輪），所以它若剛好在最後一輪才越過門檻，`PreToolUse` 永遠攔不到，半成品仍會被當成成果回報。這是把攔截點掛在工具呼叫上的結構性代價，無解。
 - **sub agent 那條鏈上有三個環節只是模型順從性**：(a) sub agent 收到 deny reason 後有沒有真的去寫交接檔、(b) 交接檔內容夠不夠讓人接手、(c) **它有沒有在最終回覆裡如實說「我沒做完」**——(a) 和 (c) 都不再有 hook 可以兜底，2.2.0 那層兜底已被證實有害而移除
 - **`PreToolUse` payload 的 `transcript_path` 在 sub agent 內指向主檔還是專屬檔未實測**，所以兩種形狀都涵蓋；兩個候選都不存在就靜默退出。這條路徑的失敗模式是「永遠不觸發且完全靜默」，要確認它有在跑就掛 `CC_HANDOFF_TRACE`
 - **payload 的 `agent_id` 是否等於檔名裡的 `<agent_id>` 未直接實測**：只驗過 transcript 檔內 `agentId` 欄位與檔名一致（`agent-a12a9e71e33f24f4f.jsonl` ↔ `agentId: a12a9e71e33f24f4f`）
 - **實測上 sub agent 照著 deny 的 `permissionDecisionReason` 做了**（收到 deny 後寫出交接檔、最終回覆報「未完成、請重派」，主 agent 據此重派）。但這條路一旦失效就**沒有備援**了——2.2.0 靠 `SubagentStop` 兜底的設計已被證實會造成無限迴圈而移除，若哪天 sub agent 只收到「工具呼叫被取消」而看不到理由，主 agent 就無從得知它是被中止的
-- **狀態檔會殘留，而且清掃的觸發路徑比想像中窄**。`SubagentStop` 沒觸發的話 `sa-<agent_id>` 會留下（無害：deny 已經發過，不會死鎖），**交接檔 `subagent-handoff-*.md` 也一樣會留**——而那是有內容的檔案，可能好幾 KB，比 1 byte 的 `nags-*` 值得在意。唯一的清掃是 `check.sh` 裡那支 7 天 `find`，它排在「未達門檻早退」「`/handoff` 逃生口」「已交接就 block」三個 early exit **之後**，所以只在「已達門檻 + 這則不是 handoff + 尚未交接」這條窄路徑上跑：主 session 從沒破過門檻的機器上等於不會跑，而**一旦這個 session 交接過，清掃就再也不會跑**
+- **狀態檔一定會殘留，回收完全靠 7 天清掃**。`sa-<agent_id>` 從 2.3.0 起沒有任何人會主動刪（無害：deny 已經發過，不會死鎖），**交接檔 `subagent-handoff-*.md` 也一樣會留**——那是有內容的檔案，可能好幾 KB。唯一的清掃是 `check.sh` 裡那支 7 天 `find`；它已經移到所有早退之前，每一則使用者訊息都會跑一次，但**前提是這台機器上有人在用互動式主 session**。純跑 `claude -p` 的機器沒有 `UserPromptSubmit`，仍然不會清
 - **交接過的 session 被硬中斷之後有四條逃生口**：再打一次 `/handoff`（或純文字 `handoff` / `交接`）、`/compact`（compact 邊界之後那次交接就過期了）、`CC_HANDOFF_DISABLE=1`，以及第四條——訊息以 `<tag>` 尖角標籤開頭時會被判定成系統注入（為了不 erase 背景任務完成通知），繞過 block 只拿到提醒。真人打 `<x>繼續做這件事` 就能鑽過去。這是刻意保留的溫和後門（真人幾乎不會這樣開頭），不打算收窄
 - **改了 hook 行為記得 bump `plugin.json` 的 `version`**：plugin 快取是按版本號分目錄的（`~/.claude/plugins/cache/sam-tools/context-handoff/<version>/`），版本沒動的話 `/plugin marketplace update` 之後可能仍在跑舊碼——又是一個「裝好了、沒錯誤、行為是舊的」情境。
 
