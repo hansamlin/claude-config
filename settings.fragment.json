@@ -4,7 +4,8 @@
     "ENABLE_TOOL_SEARCH": "1",
     "ENABLE_LSP_TOOL": "1",
     "CLAUDE_CODE_MAX_SUBAGENT_SPAWN_DEPTH": "2",
-    "CLAUDE_CODE_MAX_CONCURRENT_SUBAGENTS": "20"
+    "CLAUDE_CODE_MAX_CONCURRENT_SUBAGENTS": "20",
+    "CLAUDE_CODE_EXPERIMENTAL_AGENT_TEAMS": "1"
   },
   "attribution": {
     "commit": "",
@@ -60,13 +61,6 @@
     "tsgo-lsp@sam-tools": true
   },
   "extraKnownMarketplaces": {
-    "anthropic-agent-skills": {
-      "source": {
-        "source": "github",
-        "repo": "anthropics/skills"
-      },
-      "autoUpdate": true
-    },
     "karpathy-skills": {
       "source": {
         "source": "github",
@@ -78,12 +72,20 @@
       "source": {
         "source": "github",
         "repo": "bradautomates/claude-video"
-      }
+      },
+      "autoUpdate": true
     },
     "sam-tools": {
       "source": {
         "source": "github",
         "repo": "hansamlin/claude-config"
+      },
+      "autoUpdate": true
+    },
+    "anthropic-agent-skills": {
+      "source": {
+        "source": "github",
+        "repo": "anthropics/skills"
       },
       "autoUpdate": true
     }
@@ -98,8 +100,10 @@
   "theme": "auto",
   "editorMode": "normal",
   "verbose": false,
+  "autoCompactEnabled": true,
   "switchModelsOnFlag": false,
   "autoScrollEnabled": true,
+  "teammateMode": "in-process",
   "agentPushNotifEnabled": true,
   "skipAutoPermissionPrompt": true,
   "voiceEnabled": false
