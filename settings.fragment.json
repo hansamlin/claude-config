@@ -5,7 +5,7 @@
     "ENABLE_LSP_TOOL": "1",
     "CLAUDE_CODE_MAX_SUBAGENT_SPAWN_DEPTH": "2",
     "CLAUDE_CODE_MAX_CONCURRENT_SUBAGENTS": "20",
-    "CLAUDE_CODE_EXPERIMENTAL_AGENT_TEAMS": "1"
+    "CLAUDE_CODE_EXPERIMENTAL_AGENT_TEAMS": "0"
   },
   "attribution": {
     "commit": "",
@@ -52,13 +52,14 @@
   },
   "enabledPlugins": {
     "code-simplifier@claude-plugins-official": true,
-    "figma@claude-plugins-official": true,
-    "document-skills@anthropic-agent-skills": true,
     "code-review@claude-plugins-official": true,
     "andrej-karpathy-skills@karpathy-skills": true,
-    "skill-creator@claude-plugins-official": true,
+    "figma@claude-plugins-official": true,
     "context-handoff@sam-tools": true,
-    "tsgo-lsp@sam-tools": true
+    "tsgo-lsp@sam-tools": true,
+    "skill-creator@claude-plugins-official": true,
+    "document-skills@anthropic-agent-skills": true,
+    "watch@claude-video": true
   },
   "extraKnownMarketplaces": {
     "karpathy-skills": {
@@ -68,17 +69,17 @@
       },
       "autoUpdate": true
     },
-    "claude-video": {
-      "source": {
-        "source": "github",
-        "repo": "bradautomates/claude-video"
-      },
-      "autoUpdate": true
-    },
     "sam-tools": {
       "source": {
         "source": "github",
         "repo": "hansamlin/claude-config"
+      },
+      "autoUpdate": true
+    },
+    "claude-video": {
+      "source": {
+        "source": "github",
+        "repo": "bradautomates/claude-video"
       },
       "autoUpdate": true
     },
@@ -91,20 +92,28 @@
     }
   },
   "language": "Chinese (Taiwan)",
+  "alwaysThinkingEnabled": true,
   "effortLevel": "high",
   "advisorModel": "opus",
   "showClearContextOnPlanAccept": true,
+  "askUserQuestionTimeout": "never",
   "autoUpdatesChannel": "latest",
   "tui": "fullscreen",
+  "voice": {
+    "enabled": true,
+    "mode": "hold"
+  },
+  "autoDreamEnabled": true,
   "skipWorkflowUsageWarning": true,
   "theme": "auto",
   "editorMode": "normal",
   "verbose": false,
+  "preferredNotifChannel": "auto",
   "autoCompactEnabled": true,
   "switchModelsOnFlag": false,
   "autoScrollEnabled": true,
-  "teammateMode": "in-process",
   "agentPushNotifEnabled": true,
   "skipAutoPermissionPrompt": true,
-  "voiceEnabled": false
+  "voiceEnabled": false,
+  "teammateMode": "in-process"
 }
