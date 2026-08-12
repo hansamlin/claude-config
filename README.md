@@ -83,18 +83,17 @@ fragment 裡的路徑寫成 `__CLAUDE_DIR__` 佔位符，安裝時填成實際�
 
 Claude Code 的 hook payload **不含任何 token 欄位**（只有 statusline 拿得到 `.context_window`），所以用量得自己從 `transcript_path` 那份 JSONL 算：取最後一筆非 sidechain 的 assistant 訊息，把 `input_tokens + cache_creation_input_tokens + cache_read_input_tokens + output_tokens` 相加。這個公式已對照 statusline 的 `total_input_tokens + total_output_tokens` 實測相等。
 
-`UserPromptSubmit` hook 在**你每次送出訊息時**跑，邏輯只有一條：
+`UserPromptSubmit` hook 在**你每次送出訊息時**跑，邏輯分三階段（2.5.0）：
 
-1. 當下用量 < 門檻 → 靜默放行
-2. 當下用量 ≥ 門檻 → 注入 `additionalContext`，要 Claude 先跑 `handoff` skill 把進度寫進記憶、告訴你換 session，並**不要動你這則訊息交派的工作**；同時用 `systemMessage` 讓你也看到
-3. transcript 尾端查得到 `handoff` skill 真的被呼叫過 → 不再催告，改用 `decision: "block"` 硬中斷後續的 prompt（交接完就該開新 session，繼續做下去 context 只會再長）
-4. 催了 `CC_HANDOFF_MAX_NAGS` 次仍沒交接 → 當你是刻意要繼續用，降級為不打斷的提醒
+1. 當下用量 < `CC_HANDOFF_THRESHOLD`（提醒起點）→ 靜默放行
+2. 提醒區間（起點 ≤ 用量 < `CC_HANDOFF_HARD_LIMIT`）→ **里程碑提醒**：`level = (用量 - 起點) / CC_HANDOFF_NAG_STEP`，**跨 level 才**用 `systemMessage` 提醒一次（不注入指示、不 block，你這則訊息照常執行）。第一次達起點、以及每跨過 20k（320k、340k…）各提醒一次。`/handoff` 逃生口照舊放行；這個階段即使交接過也不 block——它只是提醒，不中斷任何事
+3. 用量 ≥ `CC_HANDOFF_HARD_LIMIT`（硬上限）→ 沿用舊的強制交接機制：未交接過就注入 `additionalContext` 要 Claude 先跑 `handoff` skill 把進度寫進記憶、**不要動你這則訊息交派的工作**，同時用 `systemMessage` 讓你也看到；transcript 尾端查得到 `handoff` skill 真的被呼叫過 → 改用 `decision: "block"` 硬中斷後續的 prompt（交接完就該開新 session，繼續做下去 context 只會再長）。**沒有降級**——2.4.0 的「催滿 `CC_HANDOFF_MAX_NAGS` 就只提醒」已隨里程碑機制移除
 
-第 3 點的判準是「transcript 說 handoff 跑過了」而不是「我催過了」。`additionalContext` 只是注入指示，沒有任何機制保證 Claude 一定照做；催一次就記帳收手的話，模型忽略一次，這個 session 就再也不會交接，而且完全靜默。掃描只看尾端 `CC_HANDOFF_LOOKBACK` 筆——compact 之後 context 會塌回去，先前那次 handoff 早就過期，掃全檔會讓舊記錄永遠壓住後續觸發。sidechain 裡的 handoff 不算數，那是 subagent 的事。
+強制交接那段的判準是「transcript 說 handoff 跑過了」而不是「我提醒過」。`additionalContext` 只是注入指示，沒有任何機制保證 Claude 一定照做；要是依賴記帳收手，模型忽略一次，這個 session 就再也不會交接，而且完全靜默。掃描只看尾端 `CC_HANDOFF_LOOKBACK` 筆——compact 之後 context 會塌回去，先前那次 handoff 早就過期，掃全檔會讓舊記錄永遠壓住後續觸發。sidechain 裡的 handoff 不算數，那是 subagent 的事。里程碑的記帳（`nag-level-<session_id>`，存的是 level 不是次數）同理：compact 之後 level 過期，由 `PostCompact` 清掉重算。
 
 hook 與 skill 放在同一個 plugin 裡是必要的：hook 觸發時會叫 Claude 執行 `handoff`，兩者分開的話，裝了 hook 卻沒有 skill 就會指向一個不存在的東西。
 
-`PostCompact` hook 只做清理：壓縮後 context 會塌回去，先前「已交接過」的記錄就過期了。
+`PostCompact` hook 只做清理：壓縮後 context 會塌回去，先前「已交接過」與里程碑 level 的記錄都過期了。
 
 ### 為什麼掛 UserPromptSubmit 而不是 Stop
 
@@ -130,18 +129,21 @@ hook 與 skill 放在同一個 plugin 裡是必要的：hook 觸發時會叫 Cla
 
 主 session 的機制對 sub agent 完全無效——`check.sh` 看到 `agent_id` 就退出，而且 sub agent 有自己的 transcript。實際上 sub agent 一樣會衝破 300k，然後帶著一個做到一半、卻寫得像做完的結論回報給主 agent。
 
-sub agent 的生命週期裡沒有「使用者送出訊息」可攔，`Stop` 類事件又太晚（那時半成品已經交出去了）。唯一每一輪都會經過的關卡是**工具呼叫**，所以用 `PreToolUse`：
+sub agent 的生命週期裡沒有「使用者送出訊息」可攔，`Stop` 類事件又太晚（那時半成品已經交出去了）。唯一每一輪都會經過的關卡是**工具呼叫**，所以用 `PreToolUse`（三階段與主 session 相同，2.5.0）：
 
 1. payload 沒有 `agent_id`（＝主 agent 的工具呼叫）→ 立刻退出。這條路徑每一次工具呼叫都會走到，判定放在最前面
-2. 有 `agent_id` → 推導 sub agent 專屬 transcript，算最後一筆 assistant 的 usage 總和，未達門檻就放行
-3. 達門檻 → `permissionDecision: "deny"`，用 `permissionDecisionReason` 告訴這個 sub agent：停止原本的工作、把交接內容寫進 `$STATE_DIR/subagent-handoff-<agent_id>.md`、最終回覆只回報「沒做完 + 交接檔路徑 + 請主 agent 以相同 agent_type/模型重派」
+2. 有 `agent_id` → 推導 sub agent 專屬 transcript，算最後一筆 assistant 的 usage 總和，未達提醒起點就放行
+3. 提醒區間 → 里程碑提醒：跨 level 注入 `additionalContext`（PreToolUse 的 schema 沒有 systemMessage，實測明載 `additionalContext`），**不 deny**、工具照跑
+4. 用量 ≥ 硬上限 → `permissionDecision: "deny"`，用 `permissionDecisionReason` 告訴這個 sub agent：停止原本的工作、把交接內容寫進 `$STATE_DIR/subagent-handoff-<agent_id>.md`、最終回覆只回報「沒做完 + 交接檔路徑 + 請主 agent 以相同 agent_type/模型重派」
 
 **寫不出交接檔的情境一律不攔**——deny 的 reason 要求的是「用 `Write` 把交接內容寫進交接檔」，對一個根本寫不了檔的 sub agent 發這道指令，等於白白吃掉一次工具呼叫又什麼都沒留下，**比不攔更糟**。目前有兩條互相獨立的跳過條件：
 
 - **agent_type 的工具集裡沒有 `Write`**。內建的 `Explore` 與 `Plan` 排除了 `Edit / Write / NotebookEdit`。清單用 `CC_HANDOFF_SUBAGENT_SKIP_TYPES` 控制（空白分隔，預設 `Explore Plan`）；做成可覆寫是因為使用者自訂 agent 遲早會讓寫死的清單腐爛
 - **permission mode 是 `plan`**。plan mode 下寫檔不是全面禁止而是**白名單制**，白名單只有 plan 檔、workflow script、scratchpad、job tmp 這幾類（binary 原文：`Plan files for current session are allowed for writing`、`Workflow script files for current session are allowed for writing`、`Scratchpad files for current session are allowed for writing`、`Job tmp/ subtree for current bg session is allowed for writing`）。交接檔寫的是 `$STATE_DIR`，不在任何一條裡，必定收到 `Cannot write to <path> while in plan mode`。判定直接讀 `PreToolUse` payload 的 `permission_mode`（合法值 `"default","acceptEdits","bypassPermissions","plan"`）
 
-**plan mode 這條比 agent_type 那條常見得多**：sub agent 繼承主 session 的 permission mode，所以只要你在 plan mode 下派工，**任何 agent_type 都會中招**，包含 `general-purpose`。兩條走的是同一條 skip 路徑——不 deny、也不寫 state 檔（沒發過 deny 就不該佔用「只 deny 一次」的配額）。
+**plan mode 這條比 agent_type 那條常見得多**：sub agent 繼承主 session 的 permission mode，所以只要你在 plan mode 下派工，**任何 agent_type 都會中招**，包含 `general-purpose`。兩條走的是同一條 skip 路徑——不 deny、也不寫 `sa-` 記帳檔（沒發過 deny 就不該佔用「只 deny 一次」的配額）。
+
+**skip 只守 deny、不守提醒（2.5.0）**：上面兩條跳過的理由是「攔了它也寫不出交接檔」——那對 deny 成立（deny 的 reason 要求它寫檔），對 stage-2 的里程碑提醒不成立（提醒只是說一句話，不叫人寫檔）。所以 skip / plan mode 的判定在實作上排在提醒分支**之後**、deny 之前：Explore / Plan / plan mode 底下照樣收得到提醒，越過硬上限時才被跳過。代價是這些 agent 在提醒區間內每次工具呼叫多付一次掃 transcript 的 jq（實測個位數毫秒）。
 
 `PreToolUse` 其實**也有** `additionalContext` 這條「不擋、只注入」的管道，schema 明列在 `hookSpecificOutput` 裡：
 
@@ -264,14 +266,19 @@ if(nt){ let Ke=e.outputSchema?.safeParse(He);
 
 | 環境變數 | 預設 | 說明 |
 | --- | --- | --- |
-| `CC_HANDOFF_THRESHOLD` | `300000` | 主 session 的觸發門檻（token）。1M context window 的 30% |
-| `CC_HANDOFF_SUBAGENT_THRESHOLD` | `300000` | sub agent 的觸發門檻。與主 session 分開，因為兩者調整的動機不同（一個是使用者體感，一個是任務切段粒度） |
-| `CC_HANDOFF_SUBAGENT_SKIP_TYPES` | `Explore Plan` | 這些 `agent_type` 的 sub agent 一律不攔（空白分隔）。預設兩個內建 agent 的工具集沒有 `Write`，攔了也寫不出交接檔。注意 plan mode 是**另一條獨立的**跳過條件，不受這個變數控制（清空它也不會讓 plan mode 下的派工被攔） |
-| `CC_HANDOFF_MAX_NAGS` | `3` | 最多主動要求交接幾次，超過就只提醒 |
+| `CC_HANDOFF_THRESHOLD` | `300000` | 主 session 的提醒起點（token）。1M context window 的 30%。在此之上先提醒、不阻擋 |
+| `CC_HANDOFF_HARD_LIMIT` | `400000` | 主 session 的硬上限（token）。超過才強制交接 |
+| `CC_HANDOFF_NAG_STEP` | `20000` | 主 session 里程碑提醒間距（token）。設 `0` 或非數字退回 `20000` |
+| `CC_HANDOFF_SUBAGENT_THRESHOLD` | `300000` | sub agent 的提醒起點。與主 session 分開，因為兩者調整的動機不同（一個是使用者體感，一個是任務切段粒度） |
+| `CC_HANDOFF_SUBAGENT_HARD_LIMIT` | `400000` | sub agent 的硬上限（token）。超過才 deny |
+| `CC_HANDOFF_SUBAGENT_NAG_STEP` | `20000` | sub agent 里程碑提醒間距（token）。設 `0` 或非數字退回 `20000` |
+| `CC_HANDOFF_SUBAGENT_SKIP_TYPES` | `Explore Plan` | 這些 `agent_type` 的 sub agent 一律不 **deny**（空白分隔）。預設兩個內建 agent 的工具集沒有 `Write`，攔了也寫不出交接檔。⚠️ **只守 deny、不守提醒**（2.5.0）：提醒區間內這些 agent 照樣收得到里程碑提醒。注意 plan mode 是**另一條獨立的**跳過條件，不受這個變數控制（清空它也不會讓 plan mode 下的派工被 deny） |
 | `CC_HANDOFF_LOOKBACK` | `300` | 往回掃幾筆 transcript 找 handoff 執行記錄 |
-| `CC_HANDOFF_DISABLE` | — | 設 `1` 完全停用。四支 hook 都吃這個開關（包含 `PostCompact` 的清理——停用狀態下它連 `nags-*` 都不會刪） |
+| `CC_HANDOFF_DISABLE` | — | 設 `1` 完全停用。四支 hook 都吃這個開關（包含 `PostCompact` 的清理——停用狀態下它連狀態檔都不會刪） |
 | `CC_HANDOFF_TRACE` | — | 設成檔案路徑，把收到的 hook payload 附加寫入，除錯用 |
 | `CC_HANDOFF_STATE_DIR` | `~/.claude/handoff-state` | 狀態目錄，測試用來隔離 |
+
+**遷移**（2.5.0）：`CC_HANDOFF_MAX_NAGS` 已移除（催告計數被里程碑機制取代，stage-3 不再降級）。要把行為還原成 2.4.0 以前的單門檻——沒有提醒區間、一過起點就強制交接——把 `CC_HANDOFF_HARD_LIMIT` 設成與 `CC_HANDOFF_THRESHOLD` 相同即可。
 
 要永久改門檻就寫進 `settings.json` 的 `env` 區塊。想看一次完整流程：
 
@@ -279,7 +286,18 @@ if(nt){ let Ke=e.outputSchema?.safeParse(He);
 CC_HANDOFF_THRESHOLD=5000 claude
 ```
 
-第一次送出訊息就會轉去做 handoff，跑完之後只提醒不打斷。
+用量一過 5000 就進提醒區間（5000～400000），第一次送出訊息會收到里程碑提醒、不阻擋。要示範**強制交接**得把硬上限也設小：
+
+```bash
+CC_HANDOFF_THRESHOLD=5000 CC_HANDOFF_HARD_LIMIT=10000 claude
+```
+
+小數字版的三段式範例（預設步距 20000 對小數字太大，把 `NAG_STEP` 一起縮小）：
+
+```bash
+CC_HANDOFF_THRESHOLD=3000 CC_HANDOFF_HARD_LIMIT=9000 CC_HANDOFF_NAG_STEP=1000 claude
+# 用量 3000 提醒（level 0）→ 4000、5000…8000 每跨 1000 提醒一次 → 9000 起強制交接
+```
 
 想確認 hook 真的有被觸發（而不是註冊了卻靜默），加上 trace：
 
@@ -287,7 +305,7 @@ CC_HANDOFF_THRESHOLD=5000 claude
 CC_HANDOFF_THRESHOLD=5000 CC_HANDOFF_TRACE=/tmp/upst.jsonl claude
 ```
 
-`/tmp/upst.jsonl` 有 payload 但沒交接＝指示沒被照做；檔案空的＝hook 根本沒註冊到。
+`/tmp/upst.jsonl` 有 payload 但沒提醒／沒交接＝指示沒被照做；檔案空的＝hook 根本沒註冊到。
 
 ### 測試
 
@@ -296,7 +314,7 @@ bash plugins/context-handoff/scripts/check.test.sh
 bash plugins/context-handoff/scripts/subagent-check.test.sh
 ```
 
-`subagent-check.test.sh` 有 25 組案例、75 條斷言，涵蓋主 agent 工具呼叫必須零副作用、未達門檻靜默、達門檻 deny 且 reason 含交接檔絕對路徑與重派語意、**第二次工具呼叫必須放行的死鎖回歸**、寫交接檔本身不可被擋、`transcript_path` 給主檔或給專屬檔都要算得到量、推導不到檔案要靜默、並發 `agent_id` 狀態互不干擾、**`SubagentStop` 這條風險面必須整條消失**（檔案不存在 + `hooks.json` 不得註冊，另驗其餘三條註冊仍在，以免整份 JSON 壞掉時假綠）、**續跑不可二次 deny**、**兩條 skip 條件的正反向**（清單命中就不攔、比對必須是整個 token 相等而不能寫成 substring/prefix、`CC_HANDOFF_SUBAGENT_SKIP_TYPES` 必須真的可覆寫；`permission_mode=plan` 不攔、其餘 mode 一律照常 deny）、`agent_id` 路徑注入防護與停用開關。
+`subagent-check.test.sh` 有 31 組案例、99 條斷言，涵蓋主 agent 工具呼叫必須零副作用、未達提醒起點靜默、提醒區間跨 level 注入 `additionalContext` 提醒且不 deny（300000 恰等 / 320000 level 1 / 399999 level 4 / 同 level 連發靜默）、**skip 與 plan mode 只守 deny、不守提醒**（Explore 在 320000 收得到提醒、在 999999 仍完全靜默）、達硬上限 deny 且 reason 含交接檔絕對路徑與重派語意、**第二次工具呼叫必須放行的死鎖回歸**、寫交接檔本身不可被擋、`transcript_path` 給主檔或給專屬檔都要算得到量、推導不到檔案要靜默、並發 `agent_id` 狀態互不干擾、**`SubagentStop` 這條風險面必須整條消失**（檔案不存在 + `hooks.json` 不得註冊，另驗其餘三條註冊仍在，以免整份 JSON 壞掉時假綠）、**續跑不可二次 deny**、**兩條 skip 條件的正反向**（清單命中就不 deny、比對必須是整個 token 相等而不能寫成 substring/prefix、`CC_HANDOFF_SUBAGENT_SKIP_TYPES` 必須真的可覆寫；`permission_mode=plan` 不 deny、其餘 mode 一律照常 deny）、`agent_id` 路徑注入防護與停用開關、`NAG_STEP=0` 退回預設，以及 **350000 提醒 → 420000 deny 一次 → 續跑放行、`sa-` 與 `sa-nag-` 兩 state 共存**的生命周期。`sa-nag-*` 與 `sa-*` 一樣靠 check.sh 的 7 天清掃回收，有專組驗證。
 
 壓軸是一組**端到端**斷言：讓 `subagent-check.sh` 自己寫出 `sa-<agent_id>`，然後在六次工具呼叫裡換工具、換 `permission_mode`、把用量再翻倍、跨過「收工 → 被續跑」的分界，斷言**合計恰好 1 次 deny**。它取代了 2.2.x 那組跨檔回歸（`subagent-stop.sh` 已不存在），驗的性質也更強——不是「兩支腳本互動正確」，而是「不論中途發生什麼，deny 只發生一次」。
 
@@ -306,17 +324,26 @@ bash plugins/context-handoff/scripts/subagent-check.test.sh
 
 2.4.0 那批（`subagent-post.sh`）：改用頂層 `agent_id`（issue 原本的猜測）→ FAIL=21；取代而非附加 → FAIL=3；只送 content 陣列 → FAIL=19；拿掉 `tool_name` 守衛 → FAIL=2；拿掉 `content` 型別守衛 → FAIL=1；拿掉 `agentId` 消毒 → FAIL=1；`hooks.json` 的 matcher 改成 `Task` → FAIL=1。
 
-⚠️ 最後那條消毒的 red 證據是**第二次**才拿到的：第一版測試用 `d/../../victim`，但沒有先建出 `subagent-handoff-d/` 這個目錄，中間段不是真實目錄、路徑解析不到，**拿掉消毒也照樣綠**。這正是下面記載的第三種 vacuous test 陷阱，寫的人自己又踩了一次。
+2.5.0 那批（三階段門檻）先做了「改測試 → 對舊 code 跑出預期紅（`check.test.sh` FAIL=34、`subagent-check.test.sh` FAIL=23，全落在新機制斷言）→ 改 code 轉綠」，再補 mutation：刪 stage-2 記帳寫入 → FAIL=10；stage-2 改發 `decision:"block"` → FAIL=2；stage-3 改成純 `systemMessage` → FAIL=8；`subagent-check.sh` 的 skip 移回 stage-2 之前 → FAIL=1；`reset.sh` 漏清 `nag-level-` → FAIL=2；拿掉 `NAG_STEP` 消毒 → FAIL=2+2。獨立驗證者另外補了四次：`prev=-1` 改成 `prev=0`（level 0 永遠不提醒）→ FAIL=19 / FAIL=7；`-lt "$HARD_LIMIT"` 改成 `-le` → FAIL=4；stage-2 區塊移到「已交接 scan」之後 → FAIL=2；`/handoff` 逃生口移到 stage-2 之後 → FAIL=10。**三個「位置錯就出事」的分支（stage-2 相對於逃生口、相對於已交接 scan，skip 相對於 stage-2）各有紅證據守著。**
+
+⚠️ 已知覆蓋缺口：`reset.sh` 若被加上 `rm sa-nag-*`，兩份測試仍全綠（實作正確且註解寫明刻意不清，但沒有斷言守它）。
+
+⚠️ `NAG_STEP` 消毒那條的 red 證據形狀出乎意料，值得記著：bash 5.3 在**腳本檔**模式下遇到算術除零**不會終止整支腳本**，而是放棄當前 `if` 本體、從 `fi` 之後繼續往下跑（rc 仍為 0）。所以拿掉消毒的後果不是「hook 壞掉」而是**跳過 stage-2、直接掉進 stage-3**——在 350000 就發出強制交接指示，比崩潰更難察覺。（`bash -c` 模式則是直接以 rc=1 中止，兩者不同，用 `-c` 驗會得到錯誤結論。）
+
+⚠️ 2.4.0 那條消毒的 red 證據是**第二次**才拿到的：第一版測試用 `d/../../victim`，但沒有先建出 `subagent-handoff-d/` 這個目錄，中間段不是真實目錄、路徑解析不到，**拿掉消毒也照樣綠**。這正是下面記載的第三種 vacuous test 陷阱，寫的人自己又踩了一次。
 
 這個習慣是 2.2.1 的教訓換來的：當時「stdout 要空」的規格漏了 stderr，把 `subagent-stop.sh` 的 `exec >/dev/null 2>&1` 改成只塞 stdout、再往 stderr 寫一行字，加了 `2>&1` 的新測試 FAIL=12，舊測試形態只 FAIL=1。舊的 17 組斷言**一條都抓不到**——斷言只覆蓋你寫進去的東西，規格漏了一半時全綠沒有意義。
 
 同一輪 mutation 還抓出一個原本沒想到的洞：`set -u` 下 `$HOME` 未設定會**同時**噴 stderr 並以 rc=1 結束，而「非零 exit 也算輸出」是續跑判定裡獨立的一條路徑——所以光加 `exec` 不夠（只加 `exec`、保留 `$HOME`：stderr 確實空了，但 rc=1，sub agent 照樣被續跑），`$HOME` 也必須寫成 `${HOME:-}`。
 
-`check.test.sh` 有 19 組案例、82 條斷言，涵蓋 subagent 排除（且 `--agent` 主 session 不可誤殺）、sidechain 過濾、未達門檻靜默、達門檻注入指示、模型忽略時繼續催、催滿上限降級、handoff 跑過就收手、compact 邊界重算、bg session 必須觸發的回歸、PostCompact reset、停用開關與輸出合法性，以及**這則 prompt 本身就是 handoff 呼叫時不再重複催**（含句尾 `/handoff`、純文字整則相等、談論 handoff 的句子不可誤命中）與**已交接後硬中斷**（含背景任務通知不可被 block 的例外）。全程在 `mktemp` 目錄裡用 `CC_HANDOFF_STATE_DIR` 隔離，不會動到真實狀態。
+`check.test.sh` 有 25 組案例、108 條斷言，涵蓋 subagent 排除（且 `--agent` 主 session 不可誤殺）、sidechain 過濾、未達提醒起點靜默、提醒區間跨 level 才提醒（310000 level 0 / 320000 level 1 / 300000 恰等 / 250000→370000 跳躍單次提醒直記 level 3，證明不逐級補催）、**stage-3 連四則每則都注入、無降級（MAX_NAGS 已移除）**、handoff 跑過就 block、compact 邊界重算、bg session 必須觸發的回歸、PostCompact reset 清里程碑記錄、停用開關與輸出合法性，以及**這則 prompt 本身就是 handoff 呼叫時不再重複提醒**（含句尾 `/handoff`、純文字整則相等、談論 handoff 的句子不可誤命中）與**已交接後硬中斷**（含背景任務通知不可被 block 的例外）。另有 `NAG_STEP=0` 退回預設、`HARD_LIMIT=THRESHOLD` 還原單門檻兩個遷移相關案例。全程在 `mktemp` 目錄裡用 `CC_HANDOFF_STATE_DIR` 隔離，不會動到真實狀態。
 
 ### 已知限制
 
-- **讀到的是上一輪的數字**：hook 觸發時最新的 usage 就是上一輪 assistant 訊息，也就是你送出訊息當下的實際 context 大小——這正是要比的量，但你這則訊息本身的 token 不算在內。在 1M window 用 30 萬當門檻餘裕充足。
+- **讀到的是上一輪的數字**：hook 觸發時最新的 usage 就是上一輪 assistant 訊息，也就是你送出訊息當下的實際 context 大小——這正是要比的量，但你這則訊息本身的 token 不算在內。在 1M window 用 30 萬當提醒起點、40 萬當硬上限餘裕充足。
+- **stage-2 提醒是 best-effort**（2.5.0）：提醒走 `systemMessage`（主 session）／`additionalContext`（sub agent），與舊的強制交接一樣沒有機制保證 Claude 一定照做。它是提醒不是指令，模型忽略也只是少一句話，跨 level 記帳照常、對機制本身無害。
+- **`CC_HANDOFF_MAX_NAGS` 已移除**（2.5.0）：催告計數被里程碑機制取代，stage-3 不再降級——每次超過硬上限的 prompt 都會被要求先做 handoff，直到 transcript 查得到 handoff 呼叫才轉為 block。舊版本留下的 `nags-*` 殘留檔仍由 `PostCompact` 與 7 天清掃收掉，不影響新版本行為。
+- **遷移方式**：把 `CC_HANDOFF_HARD_LIMIT` 設成與 `CC_HANDOFF_THRESHOLD` 相同即還原 2.4.0 以前的單門檻（沒有提醒區間、一過起點就強制交接）。stage-2 提醒的文字與舊的降級提醒不同，但阻擋行為一致。
 - **compact 後第一則訊息一律放行**：邊界之後還沒有 usage 可讀，寧可漏一次也不要用陳舊數字誤觸發。下一輪就會恢復正常判斷。
 - **注入的是指示不是強制**：`additionalContext` 讓 Claude 看到並據此行動，但沒有機制能保證它一定照做。Hook 無法直接呼叫工具或 skill，這是 hooks 的設計邊界。所以才用「transcript 查得到 handoff 執行記錄」當收手條件，而不是「我催過了」。
 - `trigger: "auto"`（自動壓縮）未實測，只驗過 `manual`。reset script 不讀 `trigger` 欄位，行為應該一致；但 compact 邊界的偵測靠頂層 `isCompactSummary`，本機能找到的 compact transcript 全是 `manual`，auto 壓縮是否寫入相同標記沒有樣本可驗。若 auto 用了別的形狀，那條路徑會退回「用陳舊數字誤觸發」——不會比修正前更糟，但也不會被擋下。
