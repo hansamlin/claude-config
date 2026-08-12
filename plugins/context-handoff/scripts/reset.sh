@@ -24,16 +24,19 @@ case "$session_id" in
     *[!A-Za-z0-9_-]*) exit 0 ;;
 esac
 
-# 刻意**不清** sub agent 的 sa-<agent_id>：PostCompact 講的是主 session 被壓縮，
-# 與任何一個 sub agent 的 context 無關。清掉等於重新武裝 deny，對一個 context
-# 仍然是滿的 sub agent 再擋一次工具呼叫——它已經交接過了，再擋只是白費一輪。
-# sa-* 由 subagent-stop.sh 在該 agent 收工時清掉。真的殘留下來的話，只有
-# check.sh 那支 7 天 find 會收——但那個 find 掛在「主 session 已達門檻」的
-# 路徑上，主 session 從沒破過 300k 的機器上等於不會跑，殘留會一直累積。
-# 殘留本身無害（deny 已經發過，最多是少一次通知），所以不為它另外加清掃。
+# 刻意**不清** sub agent 的 sa-<agent_id> 與 sa-nag-<agent_id>：PostCompact 講的
+# 是主 session 被壓縮，與任何一個 sub agent 的 context 無關。清掉 sa-* 等於
+# 重新武裝 deny，對一個 context 仍然是滿的 sub agent 再擋一次工具呼叫——它
+# 已經交接過了，再擋只是白費一輪；清掉 sa-nag-* 則會對它重新武裝里程碑提醒。
+# 兩者都由 check.sh 那支 7 天 find 收（已排在所有早退之前），殘留本身無害
+# （deny 已發過、level 已記過，最多是少一次通知），所以不為它們另外加清掃。
 #
-# fired-/armed-/used- 是舊版 Stop hook 的狀態檔，一併清掉殘留
+# nags-* 是 2.4.0 以前的催告計數檔，里程碑機制（nag-level-$session_id）取代後
+# 已不會再寫新的，這裡保留 rm 是為了收舊版本留下的殘留。nag-level-* 則與
+# nags-* 相同語意——主 session 被壓縮後 context 塌回去，里程碑 level 過期，
+# 清掉讓提醒重新計算。fired-/armed-/used- 是更早的 Stop hook 狀態檔，一併清。
 rm -f "$STATE_DIR/nags-$session_id" \
+      "$STATE_DIR/nag-level-$session_id" \
       "$STATE_DIR/fired-$session_id" \
       "$STATE_DIR/armed-$session_id" \
       "$STATE_DIR/used-$session_id" 2>/dev/null

@@ -5,6 +5,14 @@
 # 已經移除（理由見 subagent-check.sh 檔頭「為什麼沒有任何人刪 sa-<agent_id>」）。
 # 原本第 10~13、17、20、20b 組已改寫成「hook 不存在時機制仍完整」的驗證。
 #
+# 2.5.0 起驗證的是三階段門檻：
+#   used < THRESHOLD                靜默
+#   THRESHOLD ≤ used < HARD_LIMIT   里程碑提醒（跨 level 才提醒，不 deny，
+#                                    skip/plan 不守提醒——Explore/Plan 照樣收提醒）
+#   used ≥ HARD_LIMIT               deny 一次 + 指示寫交接檔（skip/plan 仍守 deny）
+# 里程碑記帳在 sa-nag-<agent_id>（plain `>` 覆寫，level 單調遞增），
+# deny 記帳在 sa-<agent_id>（noclobber 原子寫入，只 deny 一次）。
+#
 # 全程在 mktemp 目錄裡跑，用 CC_HANDOFF_STATE_DIR 隔離，不會碰到
 # ~/.claude/handoff-state 的真實狀態。直接執行即可：
 #   bash plugins/context-handoff/scripts/subagent-check.test.sh
@@ -53,6 +61,12 @@ run() { # run <transcript> [agent_id] [agent_type] [tool_name] [file_path] [perm
 
 decision() { printf '%s' "$1" | jq -r '.hookSpecificOutput.permissionDecision // ""'; }
 reason()   { printf '%s' "$1" | jq -r '.hookSpecificOutput.permissionDecisionReason // ""'; }
+actx()     { printf '%s' "$1" | jq -r '.hookSpecificOutput.additionalContext // ""'; }
+
+# 「不該出現的字串」檢查：命中就回傳整段輸出（交給 check ... EMPTY 判定失敗）
+lacks() { # lacks <needle> <haystack>
+    case "$2" in *"$1"*) printf '%s' "$2" ;; esac
+}
 
 pass=0; fail=0
 check() { # check <label> <expected-substring|EMPTY> <actual>
@@ -68,6 +82,8 @@ check() { # check <label> <expected-substring|EMPTY> <actual>
 }
 
 export CC_HANDOFF_SUBAGENT_THRESHOLD=300000
+export CC_HANDOFF_SUBAGENT_HARD_LIMIT=400000
+export CC_HANDOFF_SUBAGENT_NAG_STEP=20000
 
 echo "── 1. 主 agent 的工具呼叫（payload 無 agent_id）→ 必須完全靜默"
 # 這條路徑每一次工具呼叫都會走到，任何輸出或副作用都是全域成本
@@ -79,35 +95,33 @@ check "無 agent_id → 完全沒建立 state 目錄" EMPTY \
 echo "── 2. 有 agent_id、用量未達門檻 → 靜默放行"
 make_sa_transcript "$TMP/p2/sess/subagents/agent-bbb.jsonl" 299999 bbb
 check "未達門檻 → 無輸出" EMPTY "$(run "$TMP/p2/sess.jsonl" bbb general-purpose)"
-check "未達門檻 → 不留狀態檔" EMPTY "$(ls "$CC_HANDOFF_STATE_DIR/sa-bbb" 2>/dev/null)"
+check "未達門檻 → 不留 sa- 記帳檔" EMPTY "$(ls "$CC_HANDOFF_STATE_DIR/sa-bbb" 2>/dev/null)"
+check "未達門檻 → 不留 sa-nag- 里程碑檔" EMPTY "$(ls "$CC_HANDOFF_STATE_DIR/sa-nag-bbb" 2>/dev/null)"
 
-echo "── 3. 達門檻 → deny + 指示"
+echo "── 3. 達提醒區間 → additionalContext 提醒、不 deny"
+# 2.5.0：310000 落在 stage-2（300000 ≤ used < 400000），只提醒不 deny。
+# PreToolUse schema 沒有 systemMessage，提醒走 additionalContext（實測明載）。
 make_sa_transcript "$TMP/p3/sess/subagents/agent-ccc.jsonl" 310000 ccc
 out3=$(run "$TMP/p3/sess.jsonl" ccc general-purpose)
 check "hookEventName 正確" "PreToolUse" \
     "$(printf '%s' "$out3" | jq -r '.hookSpecificOutput.hookEventName // ""')"
-check "permissionDecision=deny" "deny" "$(decision "$out3")"
-check "reason 含交接檔絕對路徑" "$CC_HANDOFF_STATE_DIR/subagent-handoff-ccc.md" \
-    "$(reason "$out3")"
-check "reason 叫它停止原本的工作" "立刻停止原本的工作" "$(reason "$out3")"
-check "reason 帶「相同」的重派語意" "相同" "$(reason "$out3")"
-check "reason 提到 agent_type 要一樣" "agent_type" "$(reason "$out3")"
-check "reason 禁止把半成品當成品回報" "把未完成的工作當成完成品回報" "$(reason "$out3")"
-# handoff skill 寫的是專案長期記憶且會就地覆蓋既有記憶檔，
-# sub agent 的接力棒混進去會汙染主線
-check "reason 明講不要用 handoff skill" "不要呼叫 handoff skill" "$(reason "$out3")"
-check "建立了 state 檔 sa-ccc" "sa-ccc" \
-    "$(ls "$CC_HANDOFF_STATE_DIR" 2>/dev/null | grep sa-ccc)"
+check "無 permissionDecision（不 deny）" EMPTY "$(decision "$out3")"
+check "additionalContext 含提醒語意" "提醒" "$(actx "$out3")"
+check "additionalContext 帶目前用量" "310000" "$(actx "$out3")"
+check "提醒語意（不含強制交接句）" EMPTY "$(lacks "本次請求已改為" "$out3")"
+check "不寫 sa-ccc 記帳檔（只有 deny 才寫）" EMPTY "$(ls "$CC_HANDOFF_STATE_DIR/sa-ccc" 2>/dev/null)"
+check "寫 sa-nag-ccc 里程碑檔" "sa-nag-ccc" \
+    "$(ls "$CC_HANDOFF_STATE_DIR" 2>/dev/null | grep sa-nag-ccc)"
 
-echo "── 4. 回歸（最重要）：第二次工具呼叫必須放行，否則死鎖"
-# deny 是無差別的——持續 deny 的話，sub agent 連寫交接檔用的 Write 都會被擋，
-# 會卡在「想交接→被擋→再試→被擋」，帶著滿的 context 空手而回
-check "state 已存在 → 第 2 次無輸出" EMPTY "$(run "$TMP/p3/sess.jsonl" ccc general-purpose)"
-check "state 已存在 → 第 3 次仍無輸出" EMPTY \
+echo "── 4. 同 level 連發 → 靜默（sa-nag- 已存 level，不重複提醒）"
+check "已提醒過同 level → 第 2 次無輸出" EMPTY "$(run "$TMP/p3/sess.jsonl" ccc general-purpose)"
+check "第 3 次（換工具）仍無輸出" EMPTY \
     "$(run "$TMP/p3/sess.jsonl" ccc general-purpose Write /some/other/file)"
+check "sa-nag-ccc 仍記 0（level 0）" "0" "$(cat "$CC_HANDOFF_STATE_DIR/sa-nag-ccc" 2>/dev/null)"
 
-echo "── 5. 達門檻但這次就是要寫交接檔 → 放行"
-make_sa_transcript "$TMP/p5/sess/subagents/agent-ddd.jsonl" 310000 ddd
+echo "── 5. ≥ 硬上限但這次就是要寫交接檔 → 放行"
+# deny 當下要寫的就是交接檔本身 → 放行，否則第一步就自相矛盾。
+make_sa_transcript "$TMP/p5/sess/subagents/agent-ddd.jsonl" 420000 ddd
 check "Write 到交接檔 → 不 deny" EMPTY \
     "$(run "$TMP/p5/sess.jsonl" ddd general-purpose Write \
         "$CC_HANDOFF_STATE_DIR/subagent-handoff-ddd.md")"
@@ -123,13 +137,13 @@ jq -n '{type:"assistant", isSidechain:false,
         message:{usage:{input_tokens:1000, cache_creation_input_tokens:0,
                         cache_read_input_tokens:0, output_tokens:0}}}' > "$TMP/p6/sess.jsonl"
 make_sa_transcript "$TMP/p6/sess/subagents/agent-eee.jsonl" 320000 eee
-check "主檔用量才 1000，仍以 subagent 專屬檔判定 → deny" "deny" \
-    "$(decision "$(run "$TMP/p6/sess.jsonl" eee general-purpose)")"
+check "主檔用量才 1000，仍以 subagent 專屬檔判定 → 提醒" "提醒" \
+    "$(actx "$(run "$TMP/p6/sess.jsonl" eee general-purpose)")"
 
 echo "── 7. transcript_path 直接給 subagent 專屬檔 → 同樣正確"
 make_sa_transcript "$TMP/p7/sess/subagents/agent-fff.jsonl" 320000 fff
-check "basename 已是 agent-<id>.jsonl → deny" "deny" \
-    "$(decision "$(run "$TMP/p7/sess/subagents/agent-fff.jsonl" fff general-purpose)")"
+check "basename 已是 agent-<id>.jsonl → 提醒" "提醒" \
+    "$(actx "$(run "$TMP/p7/sess/subagents/agent-fff.jsonl" fff general-purpose)")"
 
 echo "── 8. 推導不到檔案 → 靜默 exit 0，不可噴錯"
 check "專屬檔不存在 → 無輸出" EMPTY "$(run "$TMP/p8/nope.jsonl" ggg general-purpose 2>&1)"
@@ -304,10 +318,11 @@ tally "$(run "$TMP/p17/sess.jsonl" xfile general-purpose)"
 tally "$(run "$TMP/p17/sess.jsonl" xfile general-purpose Read /tmp/x)"
 check "六次工具呼叫（含續跑）合計恰好 1 次 deny" "1" "$deny_count"
 
-echo "── 18. skip 清單：寫不出交接檔的 agent_type 一律不攔"
+echo "── 18. skip 清單：寫不出交接檔的 agent_type 一律不攔（但只守 deny）"
 # Explore / Plan 的工具集是「All tools except Agent, Artifact, ExitPlanMode,
 # Edit, Write, NotebookEdit」——deny 訊息第 1 點叫它用 Write 寫交接檔，它根本
 # 執行不了。攔了只是白白吃掉一次工具呼叫、什麼都沒留下，比不攔更糟。
+# 2.5.0 起這條跳過**只守 deny**：stage-2 的提醒不在此限（見第 22 組）。
 make_sa_transcript "$TMP/p18/sess/subagents/agent-exp.jsonl" 999999 exp
 check "Explore 超標 → 完全無輸出" EMPTY "$(run "$TMP/p18/sess.jsonl" exp Explore 2>&1)"
 check "Explore 超標 → 不可寫 state 檔（沒發過指示就沒有「已發過」可記）" EMPTY \
@@ -356,6 +371,7 @@ echo "── 19. permission_mode=plan → 不攔（plan mode 下寫檔是白名�
 # 症狀與 Explore/Plan 完全相同：取消一次工具呼叫，然後叫它去寫一個寫不了的檔。
 # 而且這條比 agent_type 那條常見得多——sub agent 繼承主 session 的 permission
 # mode，使用者在 plan mode 下派工時**任何** agent_type 都會中招。
+# 2.5.0 起這條跳過**只守 deny**：stage-2 的提醒不在此限（見第 22 組）。
 make_sa_transcript "$TMP/p19/sess/subagents/agent-pm1.jsonl" 999999 pm1
 check "plan mode + general-purpose 超標 → 完全無輸出" EMPTY \
     "$(run "$TMP/p19/sess.jsonl" pm1 general-purpose Read /tmp/whatever plan 2>&1)"
@@ -409,6 +425,81 @@ bad_trace=$(CC_HANDOFF_TRACE="$TMP/no-such-dir/trace.jsonl" \
 bad_trace_rc=$?
 check "TRACE 指到不可寫路徑 → deny 仍然正常產出" "deny" "$(decision "$bad_trace")"
 check "TRACE 指到不可寫路徑 → exit code 仍為 0" "0" "$bad_trace_rc"
+
+echo "── 21. 邊界：300000 恰等 / 320000 level 1 / 399999 level 4 / 400000 deny"
+make_sa_transcript "$TMP/p21/sess/subagents/agent-z0.jsonl" 300000 z0
+out_z0=$(run "$TMP/p21/sess.jsonl" z0 general-purpose)
+check "300000 恰等 → 提醒（level 0）" "提醒" "$(actx "$out_z0")"
+check "300000 → sa-nag 記 0" "0" "$(cat "$CC_HANDOFF_STATE_DIR/sa-nag-z0" 2>/dev/null)"
+make_sa_transcript "$TMP/p21/sess/subagents/agent-z1.jsonl" 320000 z1
+out_z1=$(run "$TMP/p21/sess.jsonl" z1 general-purpose)
+check "320000 → level 1 提醒" "提醒" "$(actx "$out_z1")"
+check "320000 → sa-nag 記 1" "1" "$(cat "$CC_HANDOFF_STATE_DIR/sa-nag-z1" 2>/dev/null)"
+make_sa_transcript "$TMP/p21/sess/subagents/agent-z4.jsonl" 399999 z4
+out_z4=$(run "$TMP/p21/sess.jsonl" z4 general-purpose)
+check "399999 → level 4 提醒" "提醒" "$(actx "$out_z4")"
+check "399999 → sa-nag 記 4" "4" "$(cat "$CC_HANDOFF_STATE_DIR/sa-nag-z4" 2>/dev/null)"
+make_sa_transcript "$TMP/p21/sess/subagents/agent-z5.jsonl" 400000 z5
+check "400000 恰等 → deny" "deny" "$(decision "$(run "$TMP/p21/sess.jsonl" z5 general-purpose)")"
+
+echo "── 22. skip 與 plan mode 只守 deny、不守提醒"
+# 2.5.0 把 SKIP_TYPES / plan mode 判斷移到「已達門檻」之後、deny 之前：
+# stage-2 的提醒在 skip 判斷**之前**就發出，Explore / Plan / plan mode 底下
+# 一樣收得到提醒；一旦越過硬上限，這幾條才把 deny 擋下來。
+make_sa_transcript "$TMP/p22/sess/subagents/agent-exp1.jsonl" 320000 exp1
+check "Explore 在 320000 → 收到提醒（skip 不守提醒）" "提醒" \
+    "$(actx "$(run "$TMP/p22/sess.jsonl" exp1 Explore)")"
+make_sa_transcript "$TMP/p22/sess/subagents/agent-exp9.jsonl" 999999 exp9
+check "Explore 在 999999 → 完全靜默（skip 仍守 deny）" EMPTY \
+    "$(run "$TMP/p22/sess.jsonl" exp9 Explore 2>&1)"
+make_sa_transcript "$TMP/p22/sess/subagents/agent-pln1.jsonl" 320000 pln1
+check "plan mode 在 320000 → 收到提醒（plan 不守提醒）" "提醒" \
+    "$(actx "$(run "$TMP/p22/sess.jsonl" pln1 general-purpose Read /tmp/whatever plan)")"
+make_sa_transcript "$TMP/p22/sess/subagents/agent-pln9.jsonl" 999999 pln9
+check "plan mode 在 999999 → 靜默（plan 仍守 deny）" EMPTY \
+    "$(run "$TMP/p22/sess.jsonl" pln9 general-purpose Read /tmp/whatever plan 2>&1)"
+
+echo "── 23. 並發：stage-2 多個並行 hook → sa-nag- 記帳存在，絕不可 deny"
+# 與第 13b 組相反，stage-2 的記帳刻意用 plain `>`（level 單調遞增，noclobber
+# 會在第二次寫入時失敗）：並行時多個 hook 可能同時注入——重複注入是良性雜訊，
+# 這裡只斷言「不會 deny」與「記帳有落地」，不斷言恰好 1 次。
+make_sa_transcript "$TMP/p23/sess/subagents/agent-race2.jsonl" 320000 race2
+mkdir -p "$TMP/p23/out"
+for i in $(seq 1 8); do
+    ( run "$TMP/p23/sess.jsonl" race2 general-purpose > "$TMP/p23/out/$i" 2>&1 ) &
+done
+wait
+race2_denies=$(grep -l '"deny"' "$TMP/p23/out"/* 2>/dev/null | wc -l | tr -d ' ')
+check "stage-2 並發 → 0 次 deny" "0" "$race2_denies"
+check "stage-2 並發 → sa-nag- 記帳存在（重複注入是良性雜訊）" "sa-nag-race2" \
+    "$(ls "$CC_HANDOFF_STATE_DIR" | grep sa-nag-race2)"
+
+echo "── 24. 生命周期：350000 提醒 → 420000 deny 一次 → 續跑放行、兩 state 共存"
+make_sa_transcript "$TMP/p24/sess/subagents/agent-life.jsonl" 350000 life
+check "350000（stage-2）→ 提醒" "提醒" \
+    "$(actx "$(run "$TMP/p24/sess.jsonl" life general-purpose)")"
+make_sa_transcript "$TMP/p24/sess/subagents/agent-life.jsonl" 420000 life
+check "420000（stage-3）→ deny 一次" "deny" \
+    "$(decision "$(run "$TMP/p24/sess.jsonl" life general-purpose)")"
+check "續跑 → 放行" EMPTY "$(run "$TMP/p24/sess.jsonl" life general-purpose)"
+check "sa-life 記帳存在" "sa-life" "$(ls "$CC_HANDOFF_STATE_DIR" | grep sa-life)"
+check "sa-nag-life 里程碑檔仍保留（兩 state 共存）" "sa-nag-life" \
+    "$(ls "$CC_HANDOFF_STATE_DIR" | grep sa-nag-life)"
+
+echo "── 25. sa-nag-* 的回收與 sa-* 相同：靠 check.sh 的 7 天清掃"
+printf '%s\n' 1 > "$CC_HANDOFF_STATE_DIR/sa-nag-ancient"
+touch -t "$(date -v-8d +%Y%m%d%H%M 2>/dev/null || date -d '8 days ago' +%Y%m%d%H%M)" \
+    "$CC_HANDOFF_STATE_DIR/sa-nag-ancient" 2>/dev/null
+find "$CC_HANDOFF_STATE_DIR" -maxdepth 1 -type f -mtime +7 -delete 2>/dev/null
+check "8 天前的 sa-nag-* 也被清掉" EMPTY \
+    "$(ls "$CC_HANDOFF_STATE_DIR/sa-nag-ancient" 2>/dev/null)"
+
+echo "── 26. NAG_STEP=0 → 退回 20000（不除零）"
+make_sa_transcript "$TMP/p26/sess/subagents/agent-ns0.jsonl" 350000 ns0
+out_ns0=$(CC_HANDOFF_SUBAGENT_NAG_STEP=0 run "$TMP/p26/sess.jsonl" ns0 general-purpose)
+check "SUBAGENT_NAG_STEP=0 → 退回 20000 照常提醒" "提醒" "$(actx "$out_ns0")"
+check "SUBAGENT_NAG_STEP=0 → level 2（(350000-300000)/20000）" "2" \
+    "$(cat "$CC_HANDOFF_STATE_DIR/sa-nag-ns0" 2>/dev/null)"
 
 echo
 echo "PASS=$pass FAIL=$fail"

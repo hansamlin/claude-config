@@ -86,11 +86,15 @@
 #   timeout 5 維持不變：不論答案是哪一邊，把暴露窗口縮短都是對的方向。
 #
 # 可調環境變數：
-#   CC_HANDOFF_SUBAGENT_THRESHOLD  sub agent 的觸發門檻（token），預設 300000。
+#   CC_HANDOFF_SUBAGENT_THRESHOLD  sub agent 的提醒起點（token），預設 300000。
 #                                  與主 session 的 CC_HANDOFF_THRESHOLD 分開，
 #                                  因為兩者調整的動機不同（主 session 是使用者
 #                                  體感，sub agent 是任務切段粒度）。
-#   CC_HANDOFF_SUBAGENT_SKIP_TYPES 完全不攔的 agent_type 清單（空白分隔），
+#   CC_HANDOFF_SUBAGENT_HARD_LIMIT sub agent 的硬上限（token），預設 400000；
+#                                  超過才 deny。與主 session 分開的理由同上。
+#   CC_HANDOFF_SUBAGENT_NAG_STEP   sub agent 里程碑提醒間距（token），預設 20000；
+#                                  設 0 或非數字退回 20000（level 除法的分母）。
+#   CC_HANDOFF_SUBAGENT_SKIP_TYPES 完全不 deny 的 agent_type 清單（空白分隔），
 #                                  預設 `Explore Plan`。這兩種內建 agent 的工具集
 #                                  是「All tools except Agent, Artifact,
 #                                  ExitPlanMode, Edit, Write, NotebookEdit」——
@@ -102,12 +106,43 @@
 #                                  agent，內建 agent 的工具集也可能改。寫死的話
 #                                  唯一的修法是改 plugin；做成環境變數，使用者
 #                                  自己就能補上或拿掉。
+#                                  ⚠️ 2.5.0 起這條**只守 deny**：stage-2 的里程碑
+#                                  提醒不在此限（見下方三階段行為）。
 #   CC_HANDOFF_DISABLE             設為 1 完全停用（與 check.sh 共用同一個開關）
 #   CC_HANDOFF_STATE_DIR           狀態目錄，預設 ~/.claude/handoff-state
 #   CC_HANDOFF_TRACE               設成檔案路徑則附加寫入收到的 payload，除錯用。
 #                                  這支 hook 最大的失敗模式是「靜默地永遠不觸發」
 #                                  （路徑推導錯、payload 沒有 agent_id 之類），
 #                                  trace 是唯一能便宜證實它有在跑的手段。
+#
+# 三階段行為（2.5.0）：
+#   used < THRESHOLD              靜默。
+#   THRESHOLD ≤ used < HARD_LIMIT 里程碑提醒：level = (used - THRESHOLD) / NAG_STEP，
+#                                 跨 level 才注入 additionalContext（PreToolUse
+#                                 schema 沒有 systemMessage，實測明載
+#                                 additionalContext），**不 deny**、工具照跑。
+#                                 SKIP_TYPES / plan mode **不限制提醒**——它們
+#                                 擋的是 deny 的語意「叫它寫交接檔」，提醒只是
+#                                 說一句話，Explore / Plan / plan mode 底下也
+#                                 收得到。記帳在 sa-nag-<agent_id>，plain `>`
+#                                 覆寫（level 單調遞增；並行重複注入是良性雜訊，
+#                                 與 sa-<id> 的 noclobber 原子寫入形成對比）。
+#   used ≥ HARD_LIMIT             沿用 2.4.0 的機制：deny 一次工具呼叫 + 指示寫
+#                                 交接檔 subagent-handoff-<id>.md，sa-<id> 以
+#                                 noclobber 記帳保證只 deny 一次。skip / plan
+#                                 兩條早退在這裡才生效（只守 deny，不守提醒）。
+#
+#   sa-nag-* 與 sa-* 一樣沒有任何人會主動刪，回收完全依賴 check.sh 的 7 天
+#   find 清掃；reset.sh（PostCompact）刻意不清它們——那是主 session 的壓縮，
+#   與 sub agent 的 context 無關。
+#
+# 為什麼 skip / plan mode 的判定被移到「used < THRESHOLD 早退」之後（2.5.0）：
+#   舊版它們排在算用量之前，Explore / Plan / plan mode 底下任何用量都直接
+#   退出。stage-2 提醒不需要「寫得出交接檔」這個前提（提醒不叫人寫檔），
+#   所以這兩條早退必須退到提醒之後、deny 之前，才能做到「只守 deny」。
+#   熱路徑成本：Explore / Plan / plan mode 的 sub agent 在提醒區間內，每次
+#   工具呼叫會多付一次掃 transcript 的 jq——這是「skip 只守 deny」的直接代價，
+#   實測個位數毫秒，換來的是提醒區間內這些 agent 不再完全沉默。
 
 set -uo pipefail
 
@@ -115,12 +150,22 @@ set -uo pipefail
 [ "${CC_HANDOFF_DISABLE:-0}" = "1" ] && exit 0
 
 THRESHOLD="${CC_HANDOFF_SUBAGENT_THRESHOLD:-300000}"
+HARD_LIMIT="${CC_HANDOFF_SUBAGENT_HARD_LIMIT:-400000}"
+NAG_STEP="${CC_HANDOFF_SUBAGENT_NAG_STEP:-20000}"
 STATE_DIR="${CC_HANDOFF_STATE_DIR:-$HOME/.claude/handoff-state}"
 # 用 `-` 而不是本檔其他變數的 `:-`：這是刻意的差別。`:-` 會把空字串也當成
 # 「沒設定」而套用預設值，使用者就沒有任何辦法表達「一個都不要跳過」（只能塞
 # 一個不存在的假 type 進去）。這個變數的存在意義就是可覆寫，
 # `CC_HANDOFF_SUBAGENT_SKIP_TYPES=` 必須真的代表空清單。
 SKIP_TYPES="${CC_HANDOFF_SUBAGENT_SKIP_TYPES-Explore Plan}"
+
+# 數值消毒：非數字一律退回預設值（`:-` 對「設成空字串」不設防）。HARD_LIMIT
+# 會拿來做 `[ "$used" -lt "$HARD_LIMIT" ]`，非數字會讓 test 以 stderr 炸掉；
+# NAG_STEP 是下面 level 除法的分母，0 直接除零。
+case "$THRESHOLD" in '' | *[!0-9]*) THRESHOLD=300000 ;; esac
+case "$HARD_LIMIT" in '' | *[!0-9]*) HARD_LIMIT=400000 ;; esac
+case "$NAG_STEP" in '' | *[!0-9]*) NAG_STEP=20000 ;; esac
+[ "$NAG_STEP" -eq 0 ] && NAG_STEP=20000
 
 input=$(cat)
 [ -n "${CC_HANDOFF_TRACE:-}" ] && printf '%s\n' "$input" >> "$CC_HANDOFF_TRACE"
@@ -151,51 +196,6 @@ EOF
 case "$agent_id" in
     *[!A-Za-z0-9_-]*) exit 0 ;;
 esac
-
-# 沒有 Write 工具的 agent_type 直接不攔（見檔頭 CC_HANDOFF_SUBAGENT_SKIP_TYPES）：
-# 攔了它也寫不出交接檔，只是白白損失一次工具呼叫，比不攔更糟。不 deny、也不寫
-# 狀態檔——沒發過指示就沒有「已發過」可記。
-#
-# 位置：排在 agent_id 判定與消毒之後、狀態檔判定之前。
-#   - 不能更前面：主 agent 的呼叫沒有 agent_id，那條早退更便宜也更常走。
-#   - 不該更後面：要在付出「掃整個 transcript 算 token」的成本之前就退出。
-#
-# 比對用 for + set -f 而不是 `case " $SKIP_TYPES " in *" $agent_type "*)`：
-# case 的 pattern 位置會讓兩邊的 glob 字元都生效，`Explore*` 或 payload 送個
-# `*` 進來都會誤命中。這裡要的是**整個 token 字面相等**（大小寫敏感即可：實測
-# agent_type 就是 subagent_type 的字面，`general-purpose` 精確吻合），
-# `Explorer` 這種多一個字元的必須不命中。
-# set -f 是防 SKIP_TYPES 裡萬一有 glob 字元時被 pathname expansion 展開成檔名。
-if [ -n "$agent_type" ]; then
-    set -f
-    for _skip in $SKIP_TYPES; do
-        [ "$agent_type" = "$_skip" ] && exit 0
-    done
-    set +f
-fi
-
-# 同一條早退路徑的第二個理由：plan mode。
-# plan mode 底下寫檔不是全面禁止，是**白名單制**（binary 反查，2.1.223；
-# 用 `rg -a --fixed-strings -o '<字串>' <CLI binary>` 可自行重跑驗證）。
-#   阻擋訊息：Cannot write to <path> while in plan mode
-#   白名單原文只有這幾類：
-#     Plan files for current session are allowed for writing
-#     Workflow script files for current session are allowed for writing
-#     Scratchpad files for current session are allowed for writing
-#     Job tmp/ subtree for current session ...
-# 我們的交接檔寫在 $STATE_DIR（預設 ~/.claude/handoff-state/），**不在任何一條
-# 白名單裡** → plan mode 下必定被擋。症狀與上面的 Explore / Plan 完全相同：
-# deny 取消了一次工具呼叫，然後叫 sub agent 去寫一個它寫不了的檔，結果什麼都
-# 沒留下，比不攔更糟。
-#
-# 而且這條比 agent_type 那條常見得多：sub agent 繼承主 session 的 permission
-# mode，所以只要使用者在 plan mode 下派工，**任何** agent_type 都會中招，
-# 包括 general-purpose。
-#
-# 精確相等，不做 substring：合法值枚舉是
-# "default" / "acceptEdits" / "bypassPermissions" / "plan"（另有實測到的 "auto"），
-# 只有 "plan" 這一個要跳過。欄位不存在時 perm_mode 是空字串，照常往下走。
-[ "$perm_mode" = "plan" ] && exit 0
 
 state="$STATE_DIR/sa-$agent_id"
 handoff_file="$STATE_DIR/subagent-handoff-$agent_id.md"
@@ -250,6 +250,91 @@ esac
 
 [ "$used" -lt "$THRESHOLD" ] && exit 0
 
+# ── stage-2：里程碑提醒（THRESHOLD ≤ used < HARD_LIMIT）──
+#
+# 只注入 additionalContext（PreToolUse schema 沒有 systemMessage），**不給
+# permissionDecision**：工具照常執行，只是讓 sub agent 知道用量在漲。
+# 這裡排在 skip / plan mode 判定**之前**——那兩條擋的是 deny（語意是「叫它
+# 寫交接檔」），提醒只是說一句話，Explore / Plan / plan mode 底下也收得到。
+#
+# level = (used - THRESHOLD) / NAG_STEP，跨 level 才提醒。記帳在 sa-nag-<id>，
+# 用 plain `>` 覆寫而不是 noclobber：level 只會單調遞增，noclobber 會在第二次
+# 寫入時失敗；並行時多個行程同時注入也只是多一句提醒，是良性雜訊（與下方
+# sa-<id> 的原子寫入「必須恰好一次」形成對比）。「檔不存在」當成 -1，讓
+# level 0（恰達門檻那次）也能觸發。
+if [ "$used" -lt "$HARD_LIMIT" ]; then
+    level=$(( (used - THRESHOLD) / NAG_STEP ))
+    nag_state="$STATE_DIR/sa-nag-$agent_id"
+    prev=$(cat "$nag_state" 2>/dev/null)
+    case "$prev" in
+        '' | *[!0-9]*) prev=-1 ;;
+    esac
+    if [ "$prev" -lt "$level" ]; then
+        mkdir -p "$STATE_DIR" 2>/dev/null || exit 0
+        printf '%s' "$level" > "$nag_state" 2>/dev/null
+        jq -n --argjson used "$used" --argjson threshold "$THRESHOLD" \
+              --argjson hard "$HARD_LIMIT" '
+        {
+          hookSpecificOutput: {
+            hookEventName: "PreToolUse",
+            additionalContext: (
+              "【context 用量提醒】你這個 sub agent 的 context 已用約 \($used) tokens，"
+              + "進入提醒區間（\($threshold)～\($hard)）。目前不會阻擋任何工具呼叫，"
+              + "但請留意用量——超過硬上限 \($hard) 會被強制要求先寫交接檔。"
+            )
+          }
+        }'
+    fi
+    exit 0
+fi
+
+# ── stage-3（used ≥ HARD_LIMIT）之前：skip / plan mode 只守 deny ──
+#
+# 沒有 Write 工具的 agent_type 直接不 deny（見檔頭 CC_HANDOFF_SUBAGENT_SKIP_TYPES）：
+# 攔了它也寫不出交接檔，只是白白損失一次工具呼叫，比不攔更糟。不 deny、也不寫
+# 狀態檔——沒發過指示就沒有「已發過」可記。
+#
+# 2.5.0 起這整段從「算用量之前」移到這裡：提醒區間內 Explore / Plan / plan mode
+# 也要收得到提醒（見上方 stage-2），所以 skip 只能在它之後、deny 之前生效。
+# 熱路徑成本見檔頭「為什麼 skip / plan mode 的判定被移到…」。
+#
+# 比對用 for + set -f 而不是 `case " $SKIP_TYPES " in *" $agent_type "*)`：
+# case 的 pattern 位置會讓兩邊的 glob 字元都生效，`Explore*` 或 payload 送個
+# `*` 進來都會誤命中。這裡要的是**整個 token 字面相等**（大小寫敏感即可：實測
+# agent_type 就是 subagent_type 的字面，`general-purpose` 精確吻合），
+# `Explorer` 這種多一個字元的必須不命中。
+# set -f 是防 SKIP_TYPES 裡萬一有 glob 字元時被 pathname expansion 展開成檔名。
+if [ -n "$agent_type" ]; then
+    set -f
+    for _skip in $SKIP_TYPES; do
+        [ "$agent_type" = "$_skip" ] && exit 0
+    done
+    set +f
+fi
+
+# 同一條早退路徑的第二個理由：plan mode。
+# plan mode 底下寫檔不是全面禁止，是**白名單制**（binary 反查，2.1.223；
+# 用 `rg -a --fixed-strings -o '<字串>' <CLI binary>` 可自行重跑驗證）。
+#   阻擋訊息：Cannot write to <path> while in plan mode
+#   白名單原文只有這幾類：
+#     Plan files for current session are allowed for writing
+#     Workflow script files for current session are allowed for writing
+#     Scratchpad files for current session are allowed for writing
+#     Job tmp/ subtree for current session ...
+# 我們的交接檔寫在 $STATE_DIR（預設 ~/.claude/handoff-state/），**不在任何一條
+# 白名單裡** → plan mode 下必定被擋。症狀與上面的 Explore / Plan 完全相同：
+# deny 取消了一次工具呼叫，然後叫 sub agent 去寫一個它寫不了的檔，結果什麼都
+# 沒留下，比不攔更糟。
+#
+# 而且這條比 agent_type 那條常見得多：sub agent 繼承主 session 的 permission
+# mode，所以只要使用者在 plan mode 下派工，**任何** agent_type 都會中招，
+# 包括 general-purpose。
+#
+# 精確相等，不做 substring：合法值枚舉是
+# "default" / "acceptEdits" / "bypassPermissions" / "plan"（另有實測到的 "auto"），
+# 只有 "plan" 這一個要跳過。欄位不存在時 perm_mode 是空字串，照常往下走。
+[ "$perm_mode" = "plan" ] && exit 0
+
 # 記帳一定要在 deny 之前，而且失敗就整個放棄（fail open）。
 # 理由：整套「只 deny 一次」的保證完全建立在這個檔存在上。如果先 deny 才寫、
 # 或寫失敗了還照樣 deny，接下來每一次工具呼叫都會重新 deny，連交接檔的 Write
@@ -293,14 +378,14 @@ fi
 # 報出自己那份交接檔的路徑。**沒有** SubagentStop 兜底——那條通道已於 2.2.1
 # 證實有害（任何輸出都會讓 sub agent 續跑）並於 2.3.0 整條移除，理由見檔頭。
 # 舊的交接檔不會被合併或刪除，靠 STATE_DIR 的 7 天清掃收尾。
-jq -n --arg f "$handoff_file" --argjson used "$used" --argjson threshold "$THRESHOLD" '
+jq -n --arg f "$handoff_file" --argjson used "$used" --argjson hard_limit "$HARD_LIMIT" '
 {
   hookSpecificOutput: {
     hookEventName: "PreToolUse",
     permissionDecision: "deny",
     permissionDecisionReason: (
-      "【context 門檻自動交接】你這個 sub agent 目前 context 已用約 \($used) tokens，"
-      + "達到門檻 \($threshold)。這次工具呼叫已被取消；接下來的工具呼叫不會再被擋，"
+      "【context 硬上限自動交接】你這個 sub agent 目前 context 已用約 \($used) tokens，"
+      + "達到硬上限 \($hard_limit)。這次工具呼叫已被取消；接下來的工具呼叫不會再被擋，"
       + "你有足夠的額度完成下面的交接。\n\n"
       + "**立刻停止原本的工作**，改做這三件事然後結束回合：\n\n"
       + "1. 用 Write 把交接內容寫進這個絕對路徑：\($f)\n"

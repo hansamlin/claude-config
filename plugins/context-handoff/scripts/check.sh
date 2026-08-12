@@ -14,19 +14,46 @@
 # 裡最後一筆 assistant 訊息的 message.usage。
 #
 # 可調環境變數：
-#   CC_HANDOFF_THRESHOLD  觸發門檻（token），預設 300000
-#   CC_HANDOFF_MAX_NAGS   最多主動要求交接幾次，預設 3
+#   CC_HANDOFF_THRESHOLD  提醒起點（token），預設 300000
+#   CC_HANDOFF_HARD_LIMIT 硬上限（token），預設 400000；超過才強制交接
+#   CC_HANDOFF_NAG_STEP   里程碑提醒間距（token），預設 20000；設 0 或非數字退回
+#                         20000（level 除法的分母，不能是 0）
 #   CC_HANDOFF_LOOKBACK   往回掃幾筆 transcript 找 handoff 執行記錄，預設 300
 #   CC_HANDOFF_DISABLE    設為 1 完全停用
 #   CC_HANDOFF_STATE_DIR  狀態目錄，預設 ~/.claude/handoff-state（測試用來隔離）
 #   CC_HANDOFF_TRACE      設成檔案路徑則附加寫入收到的 payload，除錯用
+#
+# 三階段行為（2.5.0）：
+#   used < THRESHOLD              靜默。
+#   THRESHOLD ≤ used < HARD_LIMIT 里程碑提醒：level = (used - THRESHOLD) / NAG_STEP，
+#                                 跨 level 才提醒（systemMessage，不 block，prompt
+#                                 照常執行）。`/handoff` 逃生口照舊放行；已交接過
+#                                 也不 block——這個階段只是提醒，不中斷任何事。
+#   used ≥ HARD_LIMIT             未交接 → 注入 additionalContext 強制先跑 handoff
+#                                 skill；已交接 → decision:"block"（系統注入的
+#                                 通知是例外，只提醒）。stage-3 沒有降級。
+#
+# 遷移逃生口：設 HARD_LIMIT=THRESHOLD 即還原 2.4.0 以前的單門檻行為（一過門檻就
+# 強制交接，沒有提醒區間）。
+#
+# 舊的 CC_HANDOFF_MAX_NAGS 催告計數（nags-$session_id）已被里程碑機制取代並移除；
+# reset.sh 仍會清 nags-* 是為了收舊版本留下的殘留檔。
 
 set -uo pipefail
 
 THRESHOLD="${CC_HANDOFF_THRESHOLD:-300000}"
-MAX_NAGS="${CC_HANDOFF_MAX_NAGS:-3}"
+HARD_LIMIT="${CC_HANDOFF_HARD_LIMIT:-400000}"
+NAG_STEP="${CC_HANDOFF_NAG_STEP:-20000}"
 LOOKBACK="${CC_HANDOFF_LOOKBACK:-300}"
 STATE_DIR="${CC_HANDOFF_STATE_DIR:-$HOME/.claude/handoff-state}"
+
+# 數值消毒：非數字一律退回預設值（`:-` 對「設成空字串」不設防）。HARD_LIMIT
+# 會拿來做 `[ "$used" -lt "$HARD_LIMIT" ]`，非數字會讓 test 以 stderr 炸掉；
+# NAG_STEP 是下面 level 除法的分母，0 直接除零。
+case "$THRESHOLD" in '' | *[!0-9]*) THRESHOLD=300000 ;; esac
+case "$HARD_LIMIT" in '' | *[!0-9]*) HARD_LIMIT=400000 ;; esac
+case "$NAG_STEP" in '' | *[!0-9]*) NAG_STEP=20000 ;; esac
+[ "$NAG_STEP" -eq 0 ] && NAG_STEP=20000
 
 [ "${CC_HANDOFF_DISABLE:-0}" = "1" ] && exit 0
 
@@ -76,11 +103,12 @@ session_id=$(jq_in '.session_id // ""')
 [ -n "$transcript" ] && [ -f "$transcript" ] || exit 0
 [ -n "$session_id" ] || exit 0
 
-# session_id 會被拼進 `nags-$session_id` 路徑並寫檔，而 reset.sh 拿同一個值去
-# `rm -f`。實際上它一律是 UUID（只含 [0-9a-f-]），但「實際上長這樣」不是防禦。
-# 白名單刻意與 agent_id 那條同一套字元集：一致的風格比逐處收得更緊更好維護，
-# 也不會誤殺日後可能出現的其他 id 形態。不符就靜默 exit 0——寧可少一次催告，
-# 也不要把 ../ 拼進會被寫入、會被刪除的路徑。
+# session_id 會被拼進 `nag-level-$session_id` 路徑並寫檔，而 reset.sh 拿同一個
+# 值去 `rm -f`（舊的 `nags-$session_id` 計數檔同理）。實際上它一律是 UUID（只含
+# [0-9a-f-]），但「實際上長這樣」不是防禦。白名單刻意與 agent_id 那條同一套
+# 字元集：一致的風格比逐處收得更緊更好維護，也不會誤殺日後可能出現的其他 id
+# 形態。不符就靜默 exit 0——寧可少一次提醒，也不要把 ../ 拼進會被寫入、會被
+# 刪除的路徑。
 case "$session_id" in
     *[!A-Za-z0-9_-]*) exit 0 ;;
 esac
@@ -146,8 +174,9 @@ prompt_text=$(jq_in '(.prompt // .prompt_text // .user_message // "")
 # `/handoff`，沒有 <command-name> 之類的包裝。少一個分支就少一處會腐爛的猜測。
 #
 # 已知會誤命中但刻意不處理：「/handoff skill 有被收入進去嗎」這種用斜線形式在
-# 發問的句子。誤命中的代價只是少一次自動催告、使用者仍看得到用量提醒；漏命中
-# 的代價是使用者主動交接卻還被叫去交接。取捨明確偏向不增加複雜度。
+# 發問的句子。誤命中的代價只是少一次提醒（stage-2）或少一次強制交接（stage-3），
+# 使用者仍看得到用量資訊；漏命中的代價是使用者主動交接卻還被叫去交接。
+# 取捨明確偏向不增加複雜度。
 HANDOFF_SLASH_RE='/(handoff|context-handoff:handoff)([^A-Za-z0-9_-]|$)'
 
 # 實測發現：UserPromptSubmit **不等於「真人送出訊息」**。背景任務跑完的通知也
@@ -176,8 +205,9 @@ is_handoff_prompt() {
 #
 # 命中時只給 systemMessage：不注入 additionalContext（叫一則已經是 /handoff
 # 的 prompt「先別做使用者要求的工作、去呼叫 handoff skill」毫無意義，語意還
-# 重複）、不給 decision（skill 要有 turn 才跑得起來）、也不寫 nag 檔（那是
-# 給「使用者沒主動交接」用的催告配額，使用者自己交接不該扣額度）。
+# 重複）、不給 decision（skill 要有 turn 才跑得起來）、也不寫 nag-level 檔
+# （那是給「使用者沒主動交接」用的里程碑記帳，使用者自己交接不該吃一次提醒
+# 配額）。
 if is_handoff_prompt "$prompt_text"; then
     jq -n --argjson used "$used" --argjson threshold "$THRESHOLD" '
     { systemMessage: ("⚠️ 已收到你的 handoff 請求。context 目前約 \($used) tokens"
@@ -185,6 +215,44 @@ if is_handoff_prompt "$prompt_text"; then
     exit 0
 fi
 
+# ── stage-2：里程碑提醒（THRESHOLD ≤ used < HARD_LIMIT）──
+#
+# 插在 `/handoff` 逃生口之後、已交接 scan 之前：
+#   - 逃生口先走：使用者主動交接不該再吃一次提醒配額。
+#   - 已交接 scan 在 stage-3 才需要（要決定 block 或注入指示）；提醒區間內即使
+#     transcript 顯示交接過，也只是提醒，絕不可 block——這正是「提醒 vs 中斷」
+#     的分界線。
+#
+# 只給 systemMessage，不 block、不注入 additionalContext：這個階段只是提醒，
+# 使用者的 prompt 照常執行。
+#
+# level = (used - THRESHOLD) / NAG_STEP，跨 level 才提醒。state 檔存的是 level
+# 而不是 level+1：檔內容「1」代表 level 1 已提醒過。用 plain `>` 覆寫而不是
+# noclobber——level 只會單調遞增，noclobber 會在第二次寫入時失敗，等於把
+# 更新鎖死。並行時多個行程同時注入只是多一句提醒，是良性雜訊。
+#
+# level 0 也是要提醒的（恰達門檻的那一次），所以「檔不存在」要當成 -1 而非 0。
+if [ "$used" -lt "$HARD_LIMIT" ]; then
+    level=$(( (used - THRESHOLD) / NAG_STEP ))
+    nag_level="$STATE_DIR/nag-level-$session_id"
+    prev=$(cat "$nag_level" 2>/dev/null)
+    case "$prev" in
+        '' | *[!0-9]*) prev=-1 ;;
+    esac
+    if [ "$prev" -lt "$level" ]; then
+        mkdir -p "$STATE_DIR" 2>/dev/null || exit 0
+        printf '%s' "$level" > "$nag_level" 2>/dev/null
+        jq -n --argjson used "$used" --argjson threshold "$THRESHOLD" \
+              --argjson hard "$HARD_LIMIT" '
+        { systemMessage: ("⚠️ context 已用約 \($used) tokens，進入提醒區間"
+                          + "（\($threshold)～\($hard)）。目前不阻擋你的工作，"
+                          + "但建議找時間交接、開新 session 接續。") }'
+    fi
+    exit 0
+fi
+
+# ── stage-3：used ≥ HARD_LIMIT（沿用 2.4.0 的強制交接機制）──
+#
 # handoff 到底跑了沒，以 transcript 為準而不是「我催過了」為準。
 # additionalContext 只是注入指示，沒有任何機制保證 Claude 一定照做；
 # 催一次就記帳收手的話，模型忽略一次就等於這個 session 再也不會交接。
@@ -219,41 +287,27 @@ if [ "$(tail -n "$LOOKBACK" "$transcript" 2>/dev/null | jq -r '
     exit 0
 fi
 
-mkdir -p "$STATE_DIR" 2>/dev/null || exit 0
-nags="$STATE_DIR/nags-$session_id"
-
-count=$(cat "$nags" 2>/dev/null)
-case "$count" in
-    '' | *[!0-9]*) count=0 ;;
-esac
-
-# 催過上限次數還是沒交接，就當使用者是刻意要繼續用，只留不打斷的提醒。
-if [ "$count" -ge "$MAX_NAGS" ]; then
-    jq -n --argjson used "$used" '
-    { systemMessage: "⚠️ context 已達交接門檻（目前約 \($used) tokens），建議盡快開新 session。" }'
-    exit 0
-fi
-
-printf '%s' "$((count + 1))" > "$nags" 2>/dev/null
-
 # 用 additionalContext 而非 decision:"block"：block 會讓這次 prompt 直接作廢，
 # Claude 沒有 turn 可以執行 handoff skill，就只剩一句提醒而沒有真的交接。
 # additionalContext 把指示連同使用者的訊息一起送進去，Claude 照常有 turn，
 # 才能實際呼叫 skill 把進度寫進記憶。
-jq -n --argjson used "$used" --argjson threshold "$THRESHOLD" '
+#
+# stage-3 沒有降級：2.4.0 的「催滿 MAX_NAGS 就只提醒」已隨里程碑機制移除，
+# 每次超過硬上限的 prompt 都會被要求先做 handoff——這是硬中斷，不是提醒。
+jq -n --argjson used "$used" --argjson hard_limit "$HARD_LIMIT" '
 {
   hookSpecificOutput: {
     hookEventName: "UserPromptSubmit",
     additionalContext: (
-      "【context 門檻自動交接】本 session 已用約 \($used) tokens，達到設定門檻 \($threshold)。\n"
+      "【context 硬上限自動交接】本 session 已用約 \($used) tokens，達到硬上限 \($hard_limit)。\n"
       + "**先不要執行使用者這則訊息要求的工作。**請依序做完這三件事，然後結束回合：\n"
       + "1. 用 Skill 工具呼叫 handoff skill（可用技能清單裡是 `handoff` 或 "
       + "`context-handoff:handoff`，兩者同一支），把目前進度與關鍵決策寫進專案記憶。\n"
       + "2. 使用者這則訊息的內容本身也要寫進交接記錄，當作下一個 session 的第一件待辦。\n"
-      + "3. 用一段話告訴使用者：context 已達門檻、進度已寫入記憶、請開新 session 接續。"
+      + "3. 用一段話告訴使用者：context 已達硬上限、進度已寫入記憶、請開新 session 接續。"
     )
   },
-  systemMessage: "⚠️ context 已達門檻 \($threshold)（目前約 \($used) tokens），本次請求已改為先執行 handoff，請開新 session 接續。"
+  systemMessage: "⚠️ context 已達硬上限 \($hard_limit)（目前約 \($used) tokens），本次請求已改為先執行 handoff，請開新 session 接續。"
 }'
 
 exit 0
