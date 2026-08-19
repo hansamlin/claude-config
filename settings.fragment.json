@@ -42,6 +42,7 @@
     "ask": [],
     "defaultMode": "auto"
   },
+  "model": "opus[1m]",
   "worktree": {
     "baseRef": "head"
   },
@@ -52,14 +53,14 @@
   },
   "enabledPlugins": {
     "code-simplifier@claude-plugins-official": true,
+    "figma@claude-plugins-official": false,
+    "document-skills@anthropic-agent-skills": true,
     "code-review@claude-plugins-official": true,
     "andrej-karpathy-skills@karpathy-skills": true,
-    "figma@claude-plugins-official": true,
+    "skill-creator@claude-plugins-official": true,
     "context-handoff@sam-tools": true,
     "tsgo-lsp@sam-tools": true,
-    "skill-creator@claude-plugins-official": true,
-    "document-skills@anthropic-agent-skills": true,
-    "watch@claude-video": true
+    "watch@claude-video": false
   },
   "extraKnownMarketplaces": {
     "karpathy-skills": {
@@ -69,17 +70,17 @@
       },
       "autoUpdate": true
     },
-    "sam-tools": {
-      "source": {
-        "source": "github",
-        "repo": "hansamlin/claude-config"
-      },
-      "autoUpdate": true
-    },
     "claude-video": {
       "source": {
         "source": "github",
         "repo": "bradautomates/claude-video"
+      },
+      "autoUpdate": true
+    },
+    "sam-tools": {
+      "source": {
+        "source": "github",
+        "repo": "hansamlin/claude-config"
       },
       "autoUpdate": true
     },
@@ -112,8 +113,8 @@
   "autoCompactEnabled": true,
   "switchModelsOnFlag": false,
   "autoScrollEnabled": true,
+  "teammateMode": "in-process",
   "agentPushNotifEnabled": true,
   "skipAutoPermissionPrompt": true,
-  "voiceEnabled": false,
-  "teammateMode": "in-process"
+  "voiceEnabled": false
 }
