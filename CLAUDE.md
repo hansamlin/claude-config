@@ -75,6 +75,8 @@
 
 時機與 `advisor` 相同：動手前一次、宣告完成前一次。
 
+# 本機 Git 環境
+
 **git push 被拒時：不要重新診斷金鑰。** HTTPS 與 SSH 兩條通道對非互動 shell 都已設定完成（2026-07-17）。逐條排查步驟見 `git-remote-troubleshoot` skill。
 
 公司專案（GitLab）用 `glab` 指令操作，個人 GitHub 專案用 `gh`。
