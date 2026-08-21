@@ -23,13 +23,17 @@ Claude Code 會把 plugin 的 `bin/` 加進 `PATH`，所以裝好之後直接打
 
 `--json` 給機器讀；`--selftest` 驗證路徑推導規則沒隨 Claude Code 版本漂掉。
 
-若 `command -v context-usage` 找不到（plugin 剛裝好、這個 session 的 `PATH` 是舊的），用這行定位：
+若 `command -v context-usage` 找不到（plugin 剛裝好、這個 session 的 `PATH` 還是舊的；
+或是這份 skill 被手動放進 `~/.claude/skills/` 而非以 plugin 安裝），用這行定位：
 
 ```bash
-ls -d ~/.claude/plugins/cache/*/context-usage/*/scripts/context-usage.sh | tail -1
+find ~/.claude/plugins/cache ~/.claude/skills -name context-usage.sh 2>/dev/null | tail -1
 ```
 
-要它生效於指令名，開新 session 即可。
+（用 `find` 不用 glob：`ls ~/.claude/plugins/cache/*/…` 在 zsh 下沒配到就直接
+`no matches found` 整行失敗，`2>/dev/null` 也擋不住。）
+
+若是前者（plugin 已裝但指令名還沒生效），開新 session 就會有。
 
 ### 輸出怎麼讀
 
