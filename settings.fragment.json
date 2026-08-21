@@ -60,6 +60,7 @@
     "skill-creator@claude-plugins-official": true,
     "context-handoff@sam-tools": true,
     "tsgo-lsp@sam-tools": true,
+    "context-usage@sam-tools": true,
     "watch@claude-video": false
   },
   "extraKnownMarketplaces": {

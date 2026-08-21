@@ -14,6 +14,11 @@
       "name": "tsgo-lsp",
       "source": "./plugins/tsgo-lsp",
       "description": "TypeScript 7 native (tsgo) LSP server"
+    },
+    {
+      "name": "context-usage",
+      "source": "./plugins/context-usage",
+      "description": "查詢當前 session 的 context 用量與百分比（需搭配 statusline.sh 才有百分比）"
     }
   ]
 }

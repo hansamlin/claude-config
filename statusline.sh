@@ -2,6 +2,27 @@
 # Read JSON input from stdin
 input=$(cat)
 
+# --- context-usage skill cache -------------------------------------------
+# 把 Claude Code 餵進來的第一手 context_window 數字落地，讓 `context-usage`
+# skill 的腳本讀得到（模型看不到 statusline 的輸出）。
+# 刻意只用 sed，不用 jq —— 這樣分享給沒裝 jq 的人也能直接貼。
+# 純加寫，失敗不影響下方顯示。
+{
+    # `:` 後面容許空白 —— payload 是否 pretty-print 不保證，兩種都要吃
+    _cu_n() { printf '%s' "$input" | sed -n "s/.*\"$1\"[[:space:]]*:[[:space:]]*\([0-9][0-9]*\).*/\1/p"; }
+    _cu_sid=$(printf '%s' "$input" | sed -n 's/.*"session_id"[[:space:]]*:[[:space:]]*"\([^"]*\)".*/\1/p')
+    _cu_mdl=$(printf '%s' "$input" | sed -n 's/.*"model"[[:space:]]*:[[:space:]]*{[^}]*"display_name"[[:space:]]*:[[:space:]]*"\([^"]*\)".*/\1/p')
+    _cu_ti=$(_cu_n total_input_tokens); _cu_to=$(_cu_n total_output_tokens)
+    _cu_ws=$(_cu_n context_window_size)
+    if [ -n "$_cu_sid" ] && [ -n "$_cu_ws" ]; then
+        mkdir -p "$HOME/.claude/context-usage"
+        printf '{"session_id":"%s","model":{"display_name":"%s"},"context_window":{"total_input_tokens":%s,"total_output_tokens":%s,"context_window_size":%s}}\n' \
+            "$_cu_sid" "$_cu_mdl" "${_cu_ti:-0}" "${_cu_to:-0}" "$_cu_ws" \
+            > "$HOME/.claude/context-usage/${_cu_sid}.json" 2>/dev/null
+    fi
+} 2>/dev/null || true
+# -------------------------------------------------------------------------
+
 # Extract values using jq
 MODEL=$(echo "$input" | jq -r '.model.display_name')
 

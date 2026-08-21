@@ -20,6 +20,7 @@ cd ~/project/claude-config
 /plugin marketplace add hansamlin/claude-config
 /plugin install context-handoff@sam-tools
 /plugin install tsgo-lsp@sam-tools
+/plugin install context-usage@sam-tools
 ```
 
 private repo 可以直接當 marketplace source——Claude Code 用 SSH clone，有金鑰就拉得到。
@@ -32,13 +33,18 @@ private repo 可以直接當 marketplace source——Claude Code 用 SSH clone�
 | --- | --- |
 | `context-handoff` | `UserPromptSubmit` / `PreToolUse` / `PostToolUse` / `PostCompact` hook + `handoff` skill |
 | `tsgo-lsp` | TypeScript 7 native (tsgo) LSP server |
+| `context-usage` | `context-usage` 指令 + 同名 skill：查當前 session 的 context 用量與百分比 |
+
+⚠️ `context-usage` 的**百分比**需要 `statusline.sh` 配合（見下一節）——context window 大小只出現在
+Claude Code 餵給 statusline hook 的 payload 裡，transcript 沒記。只裝 plugin 不跑 `install.sh` 的話，
+指令仍可用，但只會給 token 數、沒有百分比。這是本 repo 唯一一個跨兩條分發管道的功能。
 
 ### install.sh 負責的（plugin 管不到）
 
 | 檔案 | 用途 |
 | --- | --- |
 | `CLAUDE.md` | user scope 全域指示 |
-| `statusline.sh` | 路徑 / 分支 / 模型 / context 用量 / 5 小時額度 |
+| `statusline.sh` | 路徑 / 分支 / 模型 / context 用量 / 5 小時額度，另把 `context_window` 落檔給 `context-usage` plugin 讀 |
 | `settings.fragment.json` | permissions、env、theme、language 等個人設定 |
 
 `skills/`（handoff 以外）刻意不收，內含公司專案相關內容。
@@ -51,6 +57,9 @@ private repo 可以直接當 marketplace source——Claude Code 用 SSH clone�
 | --- | --- |
 | plugin 內容（hook、skill、LSP 設定） | `/plugin marketplace update` |
 | `CLAUDE.md` / `statusline.sh` / settings | 重跑 `./install.sh` |
+
+⚠️ `context-usage` 橫跨兩列：skill 與指令走 marketplace，百分比所需的快取走 `statusline.sh`。
+只做其中一邊會得到「能跑但沒有百分比」的半殘狀態，`context-usage` 的輸出會標明是哪一種來源。
 
 反向（本機改動抓回 repo）：
 
@@ -312,6 +321,7 @@ CC_HANDOFF_THRESHOLD=5000 CC_HANDOFF_TRACE=/tmp/upst.jsonl claude
 ```bash
 bash plugins/context-handoff/scripts/check.test.sh
 bash plugins/context-handoff/scripts/subagent-check.test.sh
+bash plugins/context-usage/scripts/context-usage.test.sh
 ```
 
 `subagent-check.test.sh` 有 31 組案例、99 條斷言，涵蓋主 agent 工具呼叫必須零副作用、未達提醒起點靜默、提醒區間跨 level 注入 `additionalContext` 提醒且不 deny（300000 恰等 / 320000 level 1 / 399999 level 4 / 同 level 連發靜默）、**skip 與 plan mode 只守 deny、不守提醒**（Explore 在 320000 收得到提醒、在 999999 仍完全靜默）、達硬上限 deny 且 reason 含交接檔絕對路徑與重派語意、**第二次工具呼叫必須放行的死鎖回歸**、寫交接檔本身不可被擋、`transcript_path` 給主檔或給專屬檔都要算得到量、推導不到檔案要靜默、並發 `agent_id` 狀態互不干擾、**`SubagentStop` 這條風險面必須整條消失**（檔案不存在 + `hooks.json` 不得註冊，另驗其餘三條註冊仍在，以免整份 JSON 壞掉時假綠）、**續跑不可二次 deny**、**兩條 skip 條件的正反向**（清單命中就不 deny、比對必須是整個 token 相等而不能寫成 substring/prefix、`CC_HANDOFF_SUBAGENT_SKIP_TYPES` 必須真的可覆寫；`permission_mode=plan` 不 deny、其餘 mode 一律照常 deny）、`agent_id` 路徑注入防護與停用開關、`NAG_STEP=0` 退回預設，以及 **350000 提醒 → 420000 deny 一次 → 續跑放行、`sa-` 與 `sa-nag-` 兩 state 共存**的生命周期。`sa-nag-*` 與 `sa-*` 一樣靠 check.sh 的 7 天清掃回收，有專組驗證。
@@ -325,6 +335,12 @@ bash plugins/context-handoff/scripts/subagent-check.test.sh
 2.4.0 那批（`subagent-post.sh`）：改用頂層 `agent_id`（issue 原本的猜測）→ FAIL=21；取代而非附加 → FAIL=3；只送 content 陣列 → FAIL=19；拿掉 `tool_name` 守衛 → FAIL=2；拿掉 `content` 型別守衛 → FAIL=1；拿掉 `agentId` 消毒 → FAIL=1；`hooks.json` 的 matcher 改成 `Task` → FAIL=1。
 
 2.5.0 那批（三階段門檻）先做了「改測試 → 對舊 code 跑出預期紅（`check.test.sh` FAIL=34、`subagent-check.test.sh` FAIL=23，全落在新機制斷言）→ 改 code 轉綠」，再補 mutation：刪 stage-2 記帳寫入 → FAIL=10；stage-2 改發 `decision:"block"` → FAIL=2；stage-3 改成純 `systemMessage` → FAIL=8；`subagent-check.sh` 的 skip 移回 stage-2 之前 → FAIL=1；`reset.sh` 漏清 `nag-level-` → FAIL=2；拿掉 `NAG_STEP` 消毒 → FAIL=2+2。獨立驗證者另外補了四次：`prev=-1` 改成 `prev=0`（level 0 永遠不提醒）→ FAIL=19 / FAIL=7；`-lt "$HARD_LIMIT"` 改成 `-le` → FAIL=4；stage-2 區塊移到「已交接 scan」之後 → FAIL=2；`/handoff` 逃生口移到 stage-2 之後 → FAIL=10。**三個「位置錯就出事」的分支（stage-2 相對於逃生口、相對於已交接 scan，skip 相對於 stage-2）各有紅證據守著。**
+
+`context-usage.test.sh` 有 11 組、48 條斷言，全程以 `HOME` 隔離（腳本的快取目錄與 projects 目錄都從 `$HOME` 推導）。涵蓋快取路徑算得出 used/total/pct、**compact 與 pretty 兩種 JSON 空白風格都要吃**、過期門檻與 7 天 prune 是兩條獨立機制、transcript 回退有數字但 `total`/`pct` 必須是 `null`（不可捏造分母）、**sidechain 訊息不可污染主 session 的數字**、無 `jq` 也無 `python3` 要明確報錯且 exit 1（但同一個極簡 PATH 下快取路徑仍須可用＝主路徑真的零外部依賴）、session 定位的 env var 與 cwd slug 兩條、`--selftest` 在空 `HOME` **必須 FAIL**（跳過檢查卻報綠是最糟的假綠），以及 `statusline.sh` 快取區塊的整合（兩種空白風格都要寫得出可用的快取、且原本的顯示不被破壞）。
+
+mutation 紀錄：腳本端拿掉 sed 的 `[[:space:]]` 容許 → FAIL=1；`statusline.sh` 端拿掉同一個容許 → FAIL=1；拿掉快取過期檢查 → FAIL=2；`selftest` 改成永遠報 PASS → FAIL=4；transcript 模式捏造分母（`TOTAL=200000`）→ FAIL=8；拿掉 `isSidechain` 過濾 → FAIL=2；slug 規則改成保留底線 → FAIL=6。
+
+過程中被 mutation 抓出兩個真缺陷：**（一）** 原本用「把 mtime 調到 2020」測過期，但那種檔案會先被 7 天 prune 掃掉，於是不論過期門檻在不在都會退回 transcript ⇒ 該分支恆綠。改成用 `CC_CONTEXT_USAGE_MAX_AGE` 直接驅動門檻，並把 prune 拆成獨立一組。**（二）** 門檻比較原本寫 `-le`，同一秒內產生的快取 `age=0`、`0 -le 0` 成立仍被採用 ⇒ 該測試看時鐘、會 flaky；改成 `-lt`，門檻設 0 恆定表示不採信。
 
 ⚠️ 已知覆蓋缺口：`reset.sh` 若被加上 `rm sa-nag-*`，兩份測試仍全綠（實作正確且註解寫明刻意不清，但沒有斷言守它）。
 

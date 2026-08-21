@@ -1,0 +1,9 @@
+{
+  "name": "context-usage",
+  "version": "1.0.0",
+  "description": "查詢當前 session 的 context 用量與百分比（模型看不到自己的 statusline）",
+  "author": {
+    "name": "Sam Lin",
+    "email": "sam82520@gmail.com"
+  }
+}

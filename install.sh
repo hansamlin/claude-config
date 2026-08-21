@@ -200,6 +200,8 @@ cat <<EOF
     bash "$REPO/plugins/context-handoff/scripts/check.test.sh"
     bash "$REPO/plugins/context-handoff/scripts/subagent-check.test.sh"
     bash "$REPO/plugins/context-handoff/scripts/subagent-post.test.sh"
+    bash "$REPO/plugins/context-usage/scripts/context-usage.test.sh"
+    context-usage   確認「來源」那行是 statusline 快取（不是 transcript）
     在 Claude Code 裡執行 /hooks 確認 UserPromptSubmit、PreToolUse、
       PostToolUse、PostCompact 四條都有出現（2.3.0 起沒有 SubagentStop）
     ps aux | grep -- '--lsp'   確認 LSP 跑的是 tsgo
