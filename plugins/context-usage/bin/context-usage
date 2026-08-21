@@ -1,0 +1,6 @@
+#!/bin/sh
+# Claude Code 會把 plugin 的 bin/ 加進 PATH（即使該目錄原本不存在），所以
+# 裝了這個 plugin 之後直接打 `context-usage` 就能跑，skill 不必寫死絕對路徑。
+#
+# 這支只是轉呼叫，真正的實作在 ../scripts/context-usage.sh。
+exec "$(dirname "$0")/../scripts/context-usage.sh" "$@"
