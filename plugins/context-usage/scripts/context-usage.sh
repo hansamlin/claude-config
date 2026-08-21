@@ -192,8 +192,11 @@ selftest() {
         printf '❌ 找不到任何 transcript——round-trip 無從檢查（不算通過）\n'
         failed=$((failed + 1))
     else
-        # 只掃前幾十行；用 sed 不用 grep，少一個執行時依賴
-        rec_cwd=$(head -50 "$tp" 2>/dev/null | sed -n 's/.*"cwd"[[:space:]]*:[[:space:]]*"\([^"]*\)".*/\1/p' | head -1)
+        # ⚠️ 一定要取**最後**一筆 cwd，不能取第一筆：session 中途換目錄
+        # （`/cd`、EnterWorktree）時整段歷史留在同一個檔，開頭記的是舊 cwd，
+        # 而檔案已經被搬到新 cwd 對應的 project 目錄 ⇒ 拿開頭比會誤判成「規則漂移」。
+        # 用 sed 不用 grep，少一個執行時依賴。
+        rec_cwd=$(sed -n 's/.*"cwd"[[:space:]]*:[[:space:]]*"\([^"]*\)".*/\1/p' "$tp" 2>/dev/null | tail -1)
         parent=$(basename "$(dirname "$tp")")
         if [ -z "$rec_cwd" ]; then
             printf '❌ transcript 前 50 行沒有 cwd 欄位——round-trip 無從檢查（不算通過）\n     → %s\n' "$tp"

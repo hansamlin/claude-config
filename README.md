@@ -336,11 +336,13 @@ bash plugins/context-usage/scripts/context-usage.test.sh
 
 2.5.0 那批（三階段門檻）先做了「改測試 → 對舊 code 跑出預期紅（`check.test.sh` FAIL=34、`subagent-check.test.sh` FAIL=23，全落在新機制斷言）→ 改 code 轉綠」，再補 mutation：刪 stage-2 記帳寫入 → FAIL=10；stage-2 改發 `decision:"block"` → FAIL=2；stage-3 改成純 `systemMessage` → FAIL=8；`subagent-check.sh` 的 skip 移回 stage-2 之前 → FAIL=1；`reset.sh` 漏清 `nag-level-` → FAIL=2；拿掉 `NAG_STEP` 消毒 → FAIL=2+2。獨立驗證者另外補了四次：`prev=-1` 改成 `prev=0`（level 0 永遠不提醒）→ FAIL=19 / FAIL=7；`-lt "$HARD_LIMIT"` 改成 `-le` → FAIL=4；stage-2 區塊移到「已交接 scan」之後 → FAIL=2；`/handoff` 逃生口移到 stage-2 之後 → FAIL=10。**三個「位置錯就出事」的分支（stage-2 相對於逃生口、相對於已交接 scan，skip 相對於 stage-2）各有紅證據守著。**
 
-`context-usage.test.sh` 有 12 組、48 條斷言，全程以 `HOME` 隔離（腳本的快取目錄與 projects 目錄都從 `$HOME` 推導）。涵蓋快取路徑算得出 used/total/pct、**compact 與 pretty 兩種 JSON 空白風格都要吃**、過期門檻與 7 天 prune 是兩條獨立機制、transcript 回退有數字但 `total`/`pct` 必須是 `null`（不可捏造分母）、**sidechain 訊息不可污染主 session 的數字**、無 `jq` 也無 `python3` 要明確報錯且 exit 1（但同一個極簡 PATH 下快取路徑仍須可用＝主路徑真的零外部依賴）、session 定位的 env var 與 cwd slug 兩條、`--selftest` 在空 `HOME` **必須 FAIL**（跳過檢查卻報綠是最糟的假綠），以及 `statusline.sh` 快取區塊的整合（兩種空白風格都要寫得出可用的快取、且原本的顯示不被破壞）。
+`context-usage.test.sh` 有 12 組、49 條斷言，全程以 `HOME` 隔離（腳本的快取目錄與 projects 目錄都從 `$HOME` 推導）。涵蓋快取路徑算得出 used/total/pct、**compact 與 pretty 兩種 JSON 空白風格都要吃**、過期門檻與 7 天 prune 是兩條獨立機制、transcript 回退有數字但 `total`/`pct` 必須是 `null`（不可捏造分母）、**sidechain 訊息不可污染主 session 的數字**、無 `jq` 也無 `python3` 要明確報錯且 exit 1（但同一個極簡 PATH 下快取路徑仍須可用＝主路徑真的零外部依賴）、session 定位的 env var 與 cwd slug 兩條、`--selftest` 在空 `HOME` **必須 FAIL**（跳過檢查卻報綠是最糟的假綠），以及 `statusline.sh` 快取區塊的整合（兩種空白風格都要寫得出可用的快取、且原本的顯示不被破壞）。
 
-mutation 紀錄：腳本端拿掉 sed 的 `[[:space:]]` 容許 → FAIL=1；`statusline.sh` 端拿掉同一個容許 → FAIL=1；拿掉快取過期檢查 → FAIL=2；`selftest` 改成永遠報 PASS → FAIL=4；transcript 模式捏造分母（`TOTAL=200000`）→ FAIL=8；拿掉 `isSidechain` 過濾 → FAIL=2；slug 規則改成保留底線 → FAIL=6。
+mutation 紀錄：round-trip 改成取第一筆 cwd → FAIL=1；腳本端拿掉 sed 的 `[[:space:]]` 容許 → FAIL=1；`statusline.sh` 端拿掉同一個容許 → FAIL=1；拿掉快取過期檢查 → FAIL=2；`selftest` 改成永遠報 PASS → FAIL=4；transcript 模式捏造分母（`TOTAL=200000`）→ FAIL=8；拿掉 `isSidechain` 過濾 → FAIL=2；slug 規則改成保留底線 → FAIL=6。
 
-過程中被 mutation 抓出兩個真缺陷：**（一）** 原本用「把 mtime 調到 2020」測過期，但那種檔案會先被 7 天 prune 掃掉，於是不論過期門檻在不在都會退回 transcript ⇒ 該分支恆綠。改成用 `CC_CONTEXT_USAGE_MAX_AGE` 直接驅動門檻，並把 prune 拆成獨立一組。**（二）** 門檻比較原本寫 `-le`，同一秒內產生的快取 `age=0`、`0 -le 0` 成立仍被採用 ⇒ 該測試看時鐘、會 flaky；改成 `-lt`，門檻設 0 恆定表示不採信。
+另外實跑 `--selftest` 抓出第三個真缺陷：round-trip 原本取 transcript **開頭**的 `cwd`，但 session 中途換目錄（`/cd`、`EnterWorktree`）時整段歷史留在同一個檔、檔案卻已被搬到新 cwd 對應的 project 目錄 ⇒ 拿開頭比會**誤判成「slug 規則已漂移」**。改成取最後一筆，並補了對應回歸案例。
+
+過程中被 mutation 抓出另外兩個真缺陷：**（一）** 原本用「把 mtime 調到 2020」測過期，但那種檔案會先被 7 天 prune 掃掉，於是不論過期門檻在不在都會退回 transcript ⇒ 該分支恆綠。改成用 `CC_CONTEXT_USAGE_MAX_AGE` 直接驅動門檻，並把 prune 拆成獨立一組。**（二）** 門檻比較原本寫 `-le`，同一秒內產生的快取 `age=0`、`0 -le 0` 成立仍被採用 ⇒ 該測試看時鐘、會 flaky；改成 `-lt`，門檻設 0 恆定表示不採信。
 
 ⚠️ 已知覆蓋缺口：`reset.sh` 若被加上 `rm sa-nag-*`，兩份測試仍全綠（實作正確且註解寫明刻意不清，但沒有斷言守它）。
 

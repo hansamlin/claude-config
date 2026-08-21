@@ -212,6 +212,16 @@ out9=$(env HOME="$H9" "$SCRIPT" --selftest 2>&1)
 rc9=$?
 check "健全的 HOME → PASS" "selftest: PASS" "$out9"
 check_status "健全的 HOME → exit 0" 0 "$rc9"
+# 回歸：session 中途換目錄（/cd、EnterWorktree）時整段歷史留在同一個檔，
+# 開頭記的是**舊** cwd，而檔案已被搬到新 cwd 的 project 目錄。取第一筆會把
+# 這種情況誤判成「slug 規則漂移」——實測踩過。必須取最後一筆。
+H9c="$TMP/h9c"; seed_home "$H9c" sess-9c 111
+printf '{"type":"assistant","isSidechain":false,"cwd":"/somewhere/else","message":{"usage":{"input_tokens":1,"cache_creation_input_tokens":0,"cache_read_input_tokens":0,"output_tokens":0}}}\n{"type":"assistant","isSidechain":false,"cwd":"%s","message":{"usage":{"input_tokens":2,"cache_creation_input_tokens":0,"cache_read_input_tokens":0,"output_tokens":0}}}\n' \
+    "$FAKE_CWD" > "$H9c/.claude/projects/$FAKE_SLUG/sess-9c.jsonl"
+rm -f "$H9c/.claude/projects/$FAKE_SLUG/sess-9c-other.jsonl"
+out9c=$(env HOME="$H9c" CLAUDE_CODE_SESSION_ID=sess-9c "$SCRIPT" --selftest 2>&1)
+check "換過目錄的 transcript → 取最後一筆 cwd，不誤判漂移" "selftest: PASS" "$out9c"
+
 # mutation：讓 slug 規則保留底線（`_` 不再轉成 `-`）
 MUT="$TMP/mutated.sh"
 sed 's|s/\[\^A-Za-z0-9-\]/-/g|s/[^A-Za-z0-9_-]/-/g|' "$SCRIPT" > "$MUT"
