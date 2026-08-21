@@ -12,7 +12,7 @@ cd ~/project/claude-config
 ./install.sh
 ```
 
-`install.sh` 會註冊 marketplace、安裝兩個 plugin、還原 tsgo 的 TypeScript、並把 `CLAUDE.md` / `statusline.sh` / settings 個人設定套進 `~/.claude`。需要 `jq`。
+`install.sh` 會註冊 marketplace、安裝三個 plugin、還原 tsgo 的 TypeScript、並把 `CLAUDE.md` / `statusline.sh` / settings 個人設定套進 `~/.claude`。需要 `jq`。
 
 也可以只裝 plugin 而不碰其他設定：
 
@@ -47,7 +47,7 @@ Claude Code 餵給 statusline hook 的 payload 裡，transcript 沒記。只裝 
 | `statusline.sh` | 路徑 / 分支 / 模型 / context 用量 / 5 小時額度，另把 `context_window` 落檔給 `context-usage` plugin 讀 |
 | `settings.fragment.json` | permissions、env、theme、language 等個人設定 |
 
-`skills/`（handoff 以外）刻意不收，內含公司專案相關內容。
+`skills/`（`handoff` 與 `context-usage` 以外）刻意不收，內含公司專案相關內容。
 
 **這個 repo 只適合維持 private**：`CLAUDE.md` 帶有公司脈絡（GitLab / `glab` 工作流程），要轉 public 前必須重新逐檔稽核。
 
@@ -80,7 +80,7 @@ fragment 裡的路徑寫成 `__CLAUDE_DIR__` 佔位符，安裝時填成實際�
 
 合併是**只加不減**：從 fragment 拿掉一個 key，不會讓目標機器上那個 key 消失。要真正移除某項設定，得在本機刪掉再 `./pull.sh` 同步回來。
 
-`install.sh` 會逐一安裝 fragment `enabledPlugins` 裡列出的**每一個** plugin，不只本 repo 的兩個——`enabledPlugins` 只是啟用旗標，沒真的 install 過的話 plugin 不會落地，hook 不觸發而且毫無錯誤訊息。
+`install.sh` 會逐一安裝 fragment `enabledPlugins` 裡列出的**每一個** plugin，不只本 repo 的三個——`enabledPlugins` 只是啟用旗標，沒真的 install 過的話 plugin 不會落地，hook 不觸發而且毫無錯誤訊息。
 
 `CLAUDE_DIR` 只對檔案複製與 settings 合併有效。`claude plugin install` 一律操作真實 `~/.claude`，所以 `CLAUDE_DIR` 指到別處時那兩步會被略過——那個變數是給測試用的，不是完整的沙箱。
 
