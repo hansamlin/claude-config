@@ -44,7 +44,7 @@ Claude Code 餵給 statusline hook 的 payload 裡，transcript 沒記。只裝 
 | 檔案 | 用途 |
 | --- | --- |
 | `CLAUDE.md` | user scope 全域指示 |
-| `statusline.sh` | 路徑 / 分支 / 模型 / context 用量 / 5 小時額度，另把 `context_window` 落檔給 `context-usage` plugin 讀 |
+| `statusline.sh` | 路徑 / 分支 / session id 前 8 碼 / 模型 / context 用量 / 5 小時額度，另把 `context_window` 落檔給 `context-usage` plugin 讀 |
 | `settings.fragment.json` | permissions、env、theme、language 等個人設定 |
 
 `skills/`（`handoff` 與 `context-usage` 以外）刻意不收，內含公司專案相關內容。

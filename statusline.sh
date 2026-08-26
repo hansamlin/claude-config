@@ -25,6 +25,8 @@ input=$(cat)
 
 # Extract values using jq
 MODEL=$(echo "$input" | jq -r '.model.display_name')
+SESSION_ID=$(echo "$input" | jq -r '.session_id // empty')
+[ -n "$SESSION_ID" ] && MODEL_SEG="[${SESSION_ID:0:8}] | [$MODEL]" || MODEL_SEG="[$MODEL]"
 
 # Get git branch if in a git repo
 GIT_BRANCH=""
@@ -124,9 +126,9 @@ if [ -n "$FIVE_HOUR_PCT" ]; then
         fi
     fi
 
-    THIRD_LINE="[$MODEL]${CONTEXT_SEG} | 5h: ${BAR_COLOR}${FILLED_STR}${DIM_COLOR}${EMPTY_STR}${RESET} ${BAR_COLOR}${PCT_INT}%${RESET}${RESET_STR}"
+    THIRD_LINE="${MODEL_SEG}${CONTEXT_SEG} | 5h: ${BAR_COLOR}${FILLED_STR}${DIM_COLOR}${EMPTY_STR}${RESET} ${BAR_COLOR}${PCT_INT}%${RESET}${RESET_STR}"
 else
-    THIRD_LINE="[$MODEL]${CONTEXT_SEG}"
+    THIRD_LINE="${MODEL_SEG}${CONTEXT_SEG}"
 fi
 
 # Output: line 1 (path), line 2 (branch if any), line 3 (model + rate limit)
