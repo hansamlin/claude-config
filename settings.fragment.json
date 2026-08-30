@@ -42,6 +42,7 @@
     "ask": [],
     "defaultMode": "auto"
   },
+  "model": "opus[1m]",
   "worktree": {
     "symlinkDirectories": [
       "node_modules"
@@ -62,32 +63,37 @@
     "tsgo-lsp@sam-tools": true,
     "skill-creator@claude-plugins-official": true,
     "document-skills@anthropic-agent-skills": true,
-    "watch@claude-video": true
+    "watch@claude-video": true,
+    "context-usage@sam-tools": true
   },
   "extraKnownMarketplaces": {
     "karpathy-skills": {
       "source": {
         "source": "github",
         "repo": "forrestchang/andrej-karpathy-skills"
-      }
+      },
+      "autoUpdate": true
     },
     "sam-tools": {
       "source": {
         "source": "github",
         "repo": "hansamlin/claude-config"
-      }
+      },
+      "autoUpdate": true
     },
     "claude-video": {
       "source": {
         "source": "github",
         "repo": "bradautomates/claude-video"
-      }
+      },
+      "autoUpdate": true
     },
     "anthropic-agent-skills": {
       "source": {
         "source": "github",
         "repo": "anthropics/skills"
-      }
+      },
+      "autoUpdate": true
     }
   },
   "language": "Chinese (Taiwan)",
