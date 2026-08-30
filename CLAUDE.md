@@ -54,11 +54,11 @@
 前提：使用者提供設計圖／目標截圖；瀏覽器操作用 Claude in Chrome MCP（`mcp__claude-in-chrome__*`），dev server 已在跑。「一組截圖」＝ 一個狀態的設計圖 1 張 ＋ 實作截圖 1 張。
 
 1. 主 agent briefing 附上設計圖路徑、頁面 URL，並**明列設計圖未涵蓋但要做的狀態**（hover / error / loading / empty / responsive 斷點）；未列的狀態依專案 design system 慣例，找不到慣例就回報主 agent 詢問，不自行選定。
-2. 派 **Sonnet** 實作，迴圈內用 Chrome MCP 截圖對照設計圖自行修正，每個列出的狀態各截一張；最多 4 輪，第 4 輪仍有差距 → 停下回報差在哪，不要繼續猜。判定標準是「版面／間距／色彩／字級符合設計意圖」，**不做 pixel diff**（字型抗鋸齒必差）。回報截圖時的 URL 與操作步驟。
-3. 主 agent 自己用 Chrome MCP 開同一頁截圖，對照設計圖定案；≤4 組自判，組數更多或看了不確定，才派**一次** Opus 驗證者看全部截圖。
+2. 派 **Sonnet** 實作，迴圈內用 Claude in Chrome MCP 截圖對照設計圖自行修正，每個列出的狀態各截一張；最多 4 輪，第 4 輪仍有差距 → 停下回報差在哪，不要繼續猜。判定標準是「版面／間距／色彩／字級符合設計意圖」，**不做 pixel diff**（字型抗鋸齒必差）。回報截圖時的 URL 與操作步驟。
+3. 主 agent 自己用 Claude in Chrome MCP 開同一頁截圖，對照設計圖定案；≤4 組自判，組數更多或看了不確定，才派**一次** Opus 驗證者看全部截圖。
 4. 同任務的行為邏輯測試（Q1 第 2 支）：**非瀏覽器層**（unit / component）可與第 2 步平行派 Opus 寫；**瀏覽器驅動**（Playwright / e2e）的測試排在第 3 步定案後序列進行，不與截圖迴圈搶瀏覽器。
 
-Chrome MCP 是使用者的同一個瀏覽器：**需要瀏覽器的 sub agent 一次只派一個**（其他類型任務可照常平行）；briefing 規定用 `tabs_create_mcp` 開新 tab、結束 `tabs_close_mcp`、不碰使用者既有 tab。
+Claude in Chrome MCP 是使用者的同一個瀏覽器：**需要瀏覽器的 sub agent 一次只派一個**（其他類型任務可照常平行）；briefing 規定用 `tabs_create_mcp` 開新 tab、結束 `tabs_close_mcp`、不碰使用者既有 tab。
 
 ## 執行 → 驗證 → 修正 循環（必須遵守）
 
