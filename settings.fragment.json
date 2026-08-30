@@ -5,7 +5,7 @@
     "ENABLE_LSP_TOOL": "1",
     "CLAUDE_CODE_MAX_SUBAGENT_SPAWN_DEPTH": "2",
     "CLAUDE_CODE_MAX_CONCURRENT_SUBAGENTS": "20",
-    "CLAUDE_CODE_EXPERIMENTAL_AGENT_TEAMS": "0"
+    "CLAUDE_CODE_EXPERIMENTAL_AGENT_TEAMS": "1"
   },
   "attribution": {
     "commit": "",
@@ -36,7 +36,8 @@
       "Bash(git worktree:*)",
       "Bash(glab issue:*)",
       "Bash(git commit:*)",
-      "Bash(glab mr*)"
+      "Bash(glab mr*)",
+      "mcp__claude-in-chrome"
     ],
     "deny": [],
     "ask": [],
@@ -44,6 +45,9 @@
   },
   "model": "opus[1m]",
   "worktree": {
+    "symlinkDirectories": [
+      "node_modules"
+    ],
     "baseRef": "head"
   },
   "enableWorkflows": true,
@@ -53,15 +57,15 @@
   },
   "enabledPlugins": {
     "code-simplifier@claude-plugins-official": true,
-    "figma@claude-plugins-official": false,
-    "document-skills@anthropic-agent-skills": true,
     "code-review@claude-plugins-official": true,
     "andrej-karpathy-skills@karpathy-skills": true,
-    "skill-creator@claude-plugins-official": true,
+    "figma@claude-plugins-official": true,
     "context-handoff@sam-tools": true,
     "tsgo-lsp@sam-tools": true,
-    "context-usage@sam-tools": true,
-    "watch@claude-video": false
+    "skill-creator@claude-plugins-official": true,
+    "document-skills@anthropic-agent-skills": true,
+    "watch@claude-video": true,
+    "context-usage@sam-tools": true
   },
   "extraKnownMarketplaces": {
     "karpathy-skills": {
@@ -71,17 +75,17 @@
       },
       "autoUpdate": true
     },
-    "claude-video": {
-      "source": {
-        "source": "github",
-        "repo": "bradautomates/claude-video"
-      },
-      "autoUpdate": true
-    },
     "sam-tools": {
       "source": {
         "source": "github",
         "repo": "hansamlin/claude-config"
+      },
+      "autoUpdate": true
+    },
+    "claude-video": {
+      "source": {
+        "source": "github",
+        "repo": "bradautomates/claude-video"
       },
       "autoUpdate": true
     },
@@ -115,6 +119,7 @@
   "switchModelsOnFlag": false,
   "autoScrollEnabled": true,
   "teammateMode": "in-process",
+  "remoteControlAtStartup": false,
   "agentPushNotifEnabled": true,
   "skipAutoPermissionPrompt": true,
   "voiceEnabled": false
