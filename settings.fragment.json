@@ -57,28 +57,22 @@
   },
   "enabledPlugins": {
     "code-simplifier@claude-plugins-official": true,
+    "figma@claude-plugins-official": true,
+    "document-skills@anthropic-agent-skills": true,
     "code-review@claude-plugins-official": true,
     "andrej-karpathy-skills@karpathy-skills": true,
-    "figma@claude-plugins-official": true,
+    "skill-creator@claude-plugins-official": true,
     "context-handoff@sam-tools": true,
     "tsgo-lsp@sam-tools": true,
-    "skill-creator@claude-plugins-official": true,
-    "document-skills@anthropic-agent-skills": true,
     "watch@claude-video": true,
-    "context-usage@sam-tools": true
+    "context-usage@sam-tools": true,
+    "ponytail@ponytail": true
   },
   "extraKnownMarketplaces": {
     "karpathy-skills": {
       "source": {
         "source": "github",
         "repo": "forrestchang/andrej-karpathy-skills"
-      },
-      "autoUpdate": true
-    },
-    "sam-tools": {
-      "source": {
-        "source": "github",
-        "repo": "hansamlin/claude-config"
       },
       "autoUpdate": true
     },
@@ -89,15 +83,30 @@
       },
       "autoUpdate": true
     },
+    "sam-tools": {
+      "source": {
+        "source": "github",
+        "repo": "hansamlin/claude-config"
+      },
+      "autoUpdate": true
+    },
     "anthropic-agent-skills": {
       "source": {
         "source": "github",
         "repo": "anthropics/skills"
       },
       "autoUpdate": true
+    },
+    "ponytail": {
+      "source": {
+        "source": "github",
+        "repo": "DietrichGebert/ponytail"
+      },
+      "autoUpdate": true
     }
   },
   "language": "Chinese (Taiwan)",
+  "feedbackDrafts": "notify",
   "alwaysThinkingEnabled": true,
   "effortLevel": "high",
   "advisorModel": "opus",
