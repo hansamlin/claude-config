@@ -12,7 +12,9 @@ cd ~/project/claude-config
 ./install.sh
 ```
 
-`install.sh` 會註冊 marketplace、安裝三個 plugin、還原 tsgo 的 TypeScript、並把 `CLAUDE.md` / `statusline.sh` / settings 個人設定套進 `~/.claude`。需要 `jq`。
+`install.sh` 會註冊並更新 marketplace、安裝 `enabledPlugins` 列出的每一個 plugin、還原 tsgo 的 TypeScript、並把 `CLAUDE.md` / `statusline.sh` / settings 個人設定套進 `~/.claude`。需要 `jq`。
+
+⚠️ `CLAUDE.md` 刻意排在 plugin 安裝**之後**，且有 plugin 沒裝成就跳過它——因為 `CLAUDE.md` 會指名 `agent-dispatch:dev-flows` 這類 plugin skill，指到不存在的名字不報錯、只靜默跳過流程。
 
 也可以只裝 plugin 而不碰其他設定：
 
