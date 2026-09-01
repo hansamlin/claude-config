@@ -80,6 +80,10 @@ fragment 裡的路徑寫成 `__CLAUDE_DIR__` 佔位符，安裝時填成實際�
 
 合併是**只加不減**：從 fragment 拿掉一個 key，不會讓目標機器上那個 key 消失。要真正移除某項設定，得在本機刪掉再 `./pull.sh` 同步回來。
 
+`autoMode`（auto mode 的信任邊界：GitLab 主機、內網服務、機敏檔案位置）刻意不同步，`pull.sh` 會把它濾掉。那份描述講的是「這台機器接得到什麼」，家裡的機器連不到公司環境，同步過去只會是錯的；合併只加不減，公司機器上既有的 `autoMode` 也不會被 `install.sh` 動到。
+
+`pull.sh` 落檔前還會把 `enabledPlugins` 與 `extraKnownMarketplaces` 的 key 排成升冪。Claude Code 每次啟用／停用 plugin 都會自行重排這兩個 object，順序沒有語意，但會在 `git diff` 上炸出一整片假異動、把真正的設定變更埋掉。固定順序後 diff 只會剩下真的加減了什麼。
+
 `install.sh` 會逐一安裝 fragment `enabledPlugins` 裡列出的**每一個** plugin，不只本 repo 的三個——`enabledPlugins` 只是啟用旗標，沒真的 install 過的話 plugin 不會落地，hook 不觸發而且毫無錯誤訊息。
 
 `CLAUDE_DIR` 只對檔案複製與 settings 合併有效。`claude plugin install` 一律操作真實 `~/.claude`，所以 `CLAUDE_DIR` 指到別處時那兩步會被略過——那個變數是給測試用的，不是完整的沙箱。

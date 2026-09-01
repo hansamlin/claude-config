@@ -69,12 +69,24 @@ copy CLAUDE.md
 copy statusline.sh
 
 # settings.json → settings.fragment.json
-# 去掉純本機 UI 狀態與 hooks（hooks 由 context-handoff plugin 提供），
+# 去掉純本機 UI 狀態、hooks（由 context-handoff plugin 提供），以及 autoMode
+# （auto mode 的信任邊界描述的是「這台機器接得到什麼」——公司的 GitLab 主機、
+# 內網服務、機敏檔案位置，家裡的機器本來就連不到，同步過去只會是錯的），
 # 再把本機路徑換回佔位符，這樣 repo 裡不會有個人路徑。
+#
+# enabledPlugins 與 extraKnownMarketplaces 落檔前一律排成升冪：Claude Code 每次
+# 啟用／停用 plugin 都會自行重排這兩個 object 的 key，順序沒有語意（讀設定不看
+# 順序），但每次 pull 回來都會在 git diff 上炸出一整片假異動，把真正的設定變更
+# 埋掉。固定順序後，diff 只會剩下真的加減了什麼。
 SETTINGS="$CLAUDE_DIR/settings.json"
 FRAGMENT="$REPO/settings.fragment.json"
 if [ -f "$SETTINGS" ]; then
-    new=$(jq 'del(.feedbackSurveyState) | del(.hooks)' "$SETTINGS" \
+    # has($k) 的防護不能省：`.[$k] |= f` 對不存在的 key 會憑空補一個 null 進去。
+    new=$(jq 'del(.feedbackSurveyState) | del(.hooks) | del(.autoMode)
+              | reduce ["enabledPlugins", "extraKnownMarketplaces"][] as $k
+                  (.; if has($k)
+                      then .[$k] |= (to_entries | sort_by(.key) | from_entries)
+                      else . end)' "$SETTINGS" \
           | sed "s|$CLAUDE_DIR|__CLAUDE_DIR__|g")
     if [ "$(printf '%s' "$new" | jq -S .)" != "$(jq -S . "$FRAGMENT" 2>/dev/null || echo null)" ]; then
         printf '  ~ %s\n' "settings.fragment.json"

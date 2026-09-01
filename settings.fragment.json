@@ -56,18 +56,32 @@
     "command": "bash __CLAUDE_DIR__/statusline.sh"
   },
   "enabledPlugins": {
-    "code-simplifier@claude-plugins-official": true,
-    "code-review@claude-plugins-official": true,
     "andrej-karpathy-skills@karpathy-skills": true,
-    "figma@claude-plugins-official": true,
+    "code-review@claude-plugins-official": true,
+    "code-simplifier@claude-plugins-official": true,
     "context-handoff@sam-tools": true,
-    "tsgo-lsp@sam-tools": true,
-    "skill-creator@claude-plugins-official": true,
+    "context-usage@sam-tools": true,
     "document-skills@anthropic-agent-skills": true,
-    "watch@claude-video": true,
-    "context-usage@sam-tools": true
+    "figma@claude-plugins-official": true,
+    "skill-creator@claude-plugins-official": true,
+    "tsgo-lsp@sam-tools": true,
+    "watch@claude-video": true
   },
   "extraKnownMarketplaces": {
+    "anthropic-agent-skills": {
+      "source": {
+        "source": "github",
+        "repo": "anthropics/skills"
+      },
+      "autoUpdate": true
+    },
+    "claude-video": {
+      "source": {
+        "source": "github",
+        "repo": "bradautomates/claude-video"
+      },
+      "autoUpdate": true
+    },
     "karpathy-skills": {
       "source": {
         "source": "github",
@@ -81,23 +95,10 @@
         "repo": "hansamlin/claude-config"
       },
       "autoUpdate": true
-    },
-    "claude-video": {
-      "source": {
-        "source": "github",
-        "repo": "bradautomates/claude-video"
-      },
-      "autoUpdate": true
-    },
-    "anthropic-agent-skills": {
-      "source": {
-        "source": "github",
-        "repo": "anthropics/skills"
-      },
-      "autoUpdate": true
     }
   },
   "language": "Chinese (Taiwan)",
+  "feedbackDrafts": "notify",
   "alwaysThinkingEnabled": true,
   "effortLevel": "high",
   "advisorModel": "opus",
