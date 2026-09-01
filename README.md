@@ -327,10 +327,13 @@ CC_HANDOFF_THRESHOLD=5000 CC_HANDOFF_TRACE=/tmp/upst.jsonl claude
 ### 測試
 
 ```bash
+bash install.test.sh
 bash plugins/context-handoff/scripts/check.test.sh
 bash plugins/context-handoff/scripts/subagent-check.test.sh
 bash plugins/context-usage/scripts/context-usage.test.sh
 ```
+
+`install.test.sh` 有 6 組案例、41 條斷言，守 `install.sh` 那道「有 plugin 沒裝成就不套用 `CLAUDE.md`」的閘門——CLAUDE.md 指名 `agent-dispatch:dev-flows` 這類 plugin skill，指到不存在的名字不報錯只靜默跳過流程，所以這個保護壞掉時畫面上完全看不出來。測法是在 `mktemp` 出來的假 `HOME` 底下跑真的 `install.sh`，並把 `claude` 換成 PATH 上的 stub 來決定哪個 plugin 裝失敗（閘門吃的 `PLUGIN_FAILED` 只在 `CLAUDE_DIR = $HOME/.claude` 且非 dry-run 時才會被填）。涵蓋：**中間某一個** plugin 失敗（不是全滅）時目標不得被建立／既有檔必須原封不動且不留 `.bak`、失敗只擋 CLAUDE.md 而 `statusline.sh` 照常複製、全成功時內容等於 repo 版本、既有檔不同時 `.bak` **內容**要等於舊檔（比對內容而非存在，才擋得住 `cp` 寫反）、既有檔相同時不產生多餘 `.bak`，以及 **marketplace 失敗但 plugin 全裝成時 CLAUDE.md 仍要套用**（閘門綁的是 `PLUGIN_FAILED` 不是 `MARKET_FAILED`）。每組另有三道防假綠守衛：輸出不得出現「CLAUDE_DIR 非預設」（走到那條就代表 plugin 迴圈整段被略過、失敗分支其實在測成功分支）、stub 呼叫記錄裡首尾兩個 plugin 都要有 install、exit code 必須符合預期。mutation 紀錄：拿掉閘門一律複製 → FAIL=4；條件反寫成 `-z` → FAIL=11；刪掉備份那行 `cp` → FAIL=1；閘門改綁 `MARKET_FAILED` → FAIL=6；備份守衛少掉 `! cmp -s` 那半（有檔就備份）→ FAIL=1。最後這條專門守「內容相同就不備份」——沒有它那組斷言在前四個變異下恆綠。
 
 `subagent-check.test.sh` 有 31 組案例、99 條斷言，涵蓋主 agent 工具呼叫必須零副作用、未達提醒起點靜默、提醒區間跨 level 注入 `additionalContext` 提醒且不 deny（300000 恰等 / 320000 level 1 / 399999 level 4 / 同 level 連發靜默）、**skip 與 plan mode 只守 deny、不守提醒**（Explore 在 320000 收得到提醒、在 999999 仍完全靜默）、達硬上限 deny 且 reason 含交接檔絕對路徑與重派語意、**第二次工具呼叫必須放行的死鎖回歸**、寫交接檔本身不可被擋、`transcript_path` 給主檔或給專屬檔都要算得到量、推導不到檔案要靜默、並發 `agent_id` 狀態互不干擾、**`SubagentStop` 這條風險面必須整條消失**（檔案不存在 + `hooks.json` 不得註冊，另驗其餘三條註冊仍在，以免整份 JSON 壞掉時假綠）、**續跑不可二次 deny**、**兩條 skip 條件的正反向**（清單命中就不 deny、比對必須是整個 token 相等而不能寫成 substring/prefix、`CC_HANDOFF_SUBAGENT_SKIP_TYPES` 必須真的可覆寫；`permission_mode=plan` 不 deny、其餘 mode 一律照常 deny）、`agent_id` 路徑注入防護與停用開關、`NAG_STEP=0` 退回預設，以及 **350000 提醒 → 420000 deny 一次 → 續跑放行、`sa-` 與 `sa-nag-` 兩 state 共存**的生命周期。`sa-nag-*` 與 `sa-*` 一樣靠 check.sh 的 7 天清掃回收，有專組驗證。
 

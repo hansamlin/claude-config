@@ -226,6 +226,7 @@ fi
 step "完成"
 cat <<EOF
   驗證：
+    bash "$REPO/install.test.sh"
     bash "$REPO/plugins/context-handoff/scripts/check.test.sh"
     bash "$REPO/plugins/context-handoff/scripts/subagent-check.test.sh"
     bash "$REPO/plugins/context-handoff/scripts/subagent-post.test.sh"
