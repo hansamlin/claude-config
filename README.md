@@ -12,7 +12,9 @@ cd ~/project/claude-config
 ./install.sh
 ```
 
-`install.sh` 會註冊 marketplace、安裝三個 plugin、還原 tsgo 的 TypeScript、並把 `CLAUDE.md` / `statusline.sh` / settings 個人設定套進 `~/.claude`。需要 `jq`。
+`install.sh` 會註冊並更新 marketplace、安裝 `enabledPlugins` 列出的每一個 plugin、還原 tsgo 的 TypeScript、並把 `CLAUDE.md` / `statusline.sh` / settings 個人設定套進 `~/.claude`。需要 `jq`。
+
+⚠️ `CLAUDE.md` 刻意排在 plugin 安裝**之後**，且有 plugin 沒裝成就跳過它——因為 `CLAUDE.md` 會指名 `agent-dispatch:dev-flows` 這類 plugin skill，指到不存在的名字不報錯、只靜默跳過流程。
 
 也可以只裝 plugin 而不碰其他設定：
 
@@ -21,6 +23,7 @@ cd ~/project/claude-config
 /plugin install context-handoff@sam-tools
 /plugin install tsgo-lsp@sam-tools
 /plugin install context-usage@sam-tools
+/plugin install agent-dispatch@sam-tools
 ```
 
 private repo 可以直接當 marketplace source——Claude Code 用 SSH clone，有金鑰就拉得到。
@@ -34,6 +37,7 @@ private repo 可以直接當 marketplace source——Claude Code 用 SSH clone�
 | `context-handoff` | `UserPromptSubmit` / `PreToolUse` / `PostToolUse` / `PostCompact` hook + `handoff` skill |
 | `tsgo-lsp` | TypeScript 7 native (tsgo) LSP server |
 | `context-usage` | `context-usage` 指令 + 同名 skill：查當前 session 的 context 用量與百分比 |
+| `agent-dispatch` | `dev-flows` skill：TDD／UI 視覺比對／執行→驗證→修正循環的流程本體，由 `CLAUDE.md` 的 Q1 路由後指名載入 |
 
 ⚠️ `context-usage` 的**百分比**需要 `statusline.sh` 配合（見下一節）——context window 大小只出現在
 Claude Code 餵給 statusline hook 的 payload 裡，transcript 沒記。只裝 plugin 不跑 `install.sh` 的話，
@@ -43,7 +47,7 @@ Claude Code 餵給 statusline hook 的 payload 裡，transcript 沒記。只裝 
 
 | 檔案 | 用途 |
 | --- | --- |
-| `CLAUDE.md` | user scope 全域指示 |
+| `CLAUDE.md` | user scope 全域指示（只留 router；流程本體在 `agent-dispatch` plugin，**兩者要一起裝**，否則 router 會指向不存在的 skill 且不報錯） |
 | `statusline.sh` | 路徑 / 分支 / session id 前 8 碼 / 模型 / context 用量 / 5 小時額度，另把 `context_window` 落檔給 `context-usage` plugin 讀 |
 | `settings.fragment.json` | permissions、env、theme、language 等個人設定 |
 

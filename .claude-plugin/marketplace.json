@@ -19,6 +19,11 @@
       "name": "context-usage",
       "source": "./plugins/context-usage",
       "description": "查詢當前 session 的 context 用量與百分比（需搭配 statusline.sh 才有百分比）"
+    },
+    {
+      "name": "agent-dispatch",
+      "source": "./plugins/agent-dispatch",
+      "description": "主 agent 派工的流程本體：TDD、UI 視覺比對、執行→驗證→修正循環（由全域 CLAUDE.md 的 Q1 路由後載入）"
     }
   ]
 }

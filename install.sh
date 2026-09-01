@@ -2,9 +2,14 @@
 # 把這個 repo 的設定套用到 ~/.claude。
 #
 # 分工：
-#   plugin（context-handoff / tsgo-lsp）   由 Claude Code 的 marketplace 管，
-#                                          更新走 /plugin update，不經這支腳本
+#   plugin（context-handoff / tsgo-lsp /   內容由 Claude Code 的 marketplace 管，
+#           context-usage / agent-dispatch）本腳本負責註冊來源＋逐一 install
+#
+#   ⚠️ CLAUDE.md 會指名 `agent-dispatch:dev-flows` 這類 plugin skill，指到不存在的
+#      名字不會報錯、只會靜默跳過流程。所以本腳本刻意把 CLAUDE.md 排在 plugin
+#      安裝「之後」——plugin 沒裝成就不動 CLAUDE.md，寧可整台維持舊版的自洽狀態。
 #   CLAUDE.md / statusline.sh / settings   plugin 管不到，由這支腳本套用
+#                                          （CLAUDE.md 的套用時機見上面那條 ⚠️）
 #
 # settings.json 是「深度合併」而非覆蓋，只寫入本 repo 提供的 key，
 # 目標機器上其他設定原封不動；可重複執行。
@@ -53,19 +58,7 @@ if [ "$DRY_RUN" = 1 ]; then
     printf '（dry-run，不會寫入任何檔案）\n'
 fi
 
-step "複製 plugin 管不到的檔案"
 run mkdir -p "$CLAUDE_DIR"
-for f in CLAUDE.md statusline.sh; do
-    if [ -f "$CLAUDE_DIR/$f" ] && ! cmp -s "$REPO/$f" "$CLAUDE_DIR/$f"; then
-        log "備份既有 $f → $f.bak"
-        run cp "$CLAUDE_DIR/$f" "$CLAUDE_DIR/$f.bak"
-    fi
-    log "$f"
-    run cp "$REPO/$f" "$CLAUDE_DIR/$f"
-done
-if [ "$DRY_RUN" = 0 ]; then
-    chmod +x "$CLAUDE_DIR/statusline.sh"
-fi
 
 step "合併 settings.json"
 SETTINGS="$CLAUDE_DIR/settings.json"
@@ -121,6 +114,15 @@ else
         if [ "$DRY_RUN" = 0 ]; then
             if out=$(claude plugin marketplace add "$src" 2>&1); then
                 printf '%s\n' "$out" | tail -1 | sed 's/^/    /'
+                # add 對已註冊的來源只回「already on disk」，不會重拉 manifest。
+                # 少了這步，快取會停在舊 commit，本 repo 新增的 plugin 在下一步
+                # install 時會以「not found in marketplace」失敗。
+                if upd=$(claude plugin marketplace update "$name" 2>&1); then
+                    printf '%s\n' "$upd" | tail -1 | sed 's/^/    /'
+                else
+                    printf '%s\n' "$upd" | sed 's/^/    /'
+                    MARKET_FAILED="$MARKET_FAILED $name"
+                fi
             else
                 printf '%s\n' "$out" | sed 's/^/    /'
                 MARKET_FAILED="$MARKET_FAILED $name"
@@ -160,6 +162,33 @@ else
     done <<EOF
 $PLUGINS
 EOF
+fi
+
+step "複製 plugin 管不到的檔案"
+# statusline.sh 與 plugin 無關，一律複製。
+if [ -f "$CLAUDE_DIR/statusline.sh" ] && ! cmp -s "$REPO/statusline.sh" "$CLAUDE_DIR/statusline.sh"; then
+    log "備份既有 statusline.sh → statusline.sh.bak"
+    run cp "$CLAUDE_DIR/statusline.sh" "$CLAUDE_DIR/statusline.sh.bak"
+fi
+log "statusline.sh"
+run cp "$REPO/statusline.sh" "$CLAUDE_DIR/statusline.sh"
+if [ "$DRY_RUN" = 0 ]; then
+    chmod +x "$CLAUDE_DIR/statusline.sh"
+fi
+
+# CLAUDE.md 只留 router，流程本體指名 `agent-dispatch:dev-flows` 這類 plugin skill。
+# 指到不存在的名字不報錯、只靜默跳過流程——所以 plugin 沒全裝成就不動它，
+# 讓整台維持「舊 CLAUDE.md ＋ 舊 plugin」的自洽狀態，重跑腳本即可補上。
+if [ -n "$PLUGIN_FAILED" ]; then
+    log "⚠ 有 plugin 未裝成（見上），略過 CLAUDE.md──避免它指向不存在的 skill"
+    log "  修掉上面的失敗後重跑本腳本即可套用"
+else
+    if [ -f "$CLAUDE_DIR/CLAUDE.md" ] && ! cmp -s "$REPO/CLAUDE.md" "$CLAUDE_DIR/CLAUDE.md"; then
+        log "備份既有 CLAUDE.md → CLAUDE.md.bak"
+        run cp "$CLAUDE_DIR/CLAUDE.md" "$CLAUDE_DIR/CLAUDE.md.bak"
+    fi
+    log "CLAUDE.md"
+    run cp "$REPO/CLAUDE.md" "$CLAUDE_DIR/CLAUDE.md"
 fi
 
 step "還原 tsgo-lsp 的 TypeScript"
