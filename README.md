@@ -41,7 +41,7 @@ private repo 可以直接當 marketplace source——Claude Code 用 SSH clone�
 
 ⚠️ `context-usage` 的**百分比**需要 `statusline.sh` 配合（見下一節）——context window 大小只出現在
 Claude Code 餵給 statusline hook 的 payload 裡，transcript 沒記。只裝 plugin 不跑 `install.sh` 的話，
-指令仍可用，但只會給 token 數、沒有百分比。這是本 repo 唯一一個跨兩條分發管道的功能。
+指令仍可用，但只會給 token 數、沒有百分比。這是本 repo 幾個跨兩條分發管道的功能之一。
 
 ### install.sh 負責的（plugin 管不到）
 
@@ -88,7 +88,7 @@ fragment 裡的路徑寫成 `__CLAUDE_DIR__` 佔位符，安裝時填成實際�
 
 `pull.sh` 落檔前還會把 `enabledPlugins` 與 `extraKnownMarketplaces` 的 key 排成升冪。Claude Code 每次啟用／停用 plugin 都會自行重排這兩個 object，順序沒有語意，但會在 `git diff` 上炸出一整片假異動、把真正的設定變更埋掉。固定順序後 diff 只會剩下真的加減了什麼。
 
-`install.sh` 會逐一安裝 fragment `enabledPlugins` 裡列出的**每一個** plugin，不只本 repo 的三個——`enabledPlugins` 只是啟用旗標，沒真的 install 過的話 plugin 不會落地，hook 不觸發而且毫無錯誤訊息。
+`install.sh` 會逐一安裝 fragment `enabledPlugins` 裡列出的**每一個** plugin，不只 `sam-tools` 這幾個——`enabledPlugins` 只是啟用旗標，沒真的 install 過的話 plugin 不會落地，hook 不觸發而且毫無錯誤訊息。
 
 `CLAUDE_DIR` 只對檔案複製與 settings 合併有效。`claude plugin install` 一律操作真實 `~/.claude`，所以 `CLAUDE_DIR` 指到別處時那兩步會被略過——那個變數是給測試用的，不是完整的沙箱。
 
