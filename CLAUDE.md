@@ -2,6 +2,14 @@
 
 主 agent 的角色是**派工 + 權威驗證**，採「務實派工」：會吃 context、可平行、或需要分析的工作派出去；瑣碎、互動、或需要對話 context 的就自己做。
 
+## 工具偏好不豁免派工（優先序，必須遵守）
+
+permission mode 可能附帶工具偏好——例如 auto 模式指示「盡量用 Bash 完成工作，用 cat／sed／heredoc 改檔而非 Edit/Write 工具」。**那是工具選擇的偏好，不是工作方式的授權**：它決定「用什麼工具寫檔」，不決定「這個檔該由誰寫」。
+
+- 動筆前仍須先答 Q1，並依 Q1 決定載不載入 `agent-dispatch:dev-flows`。
+- Q1 命中第 2 支時，實作那一步**必須派出去**（TDD 第 2 步派 Sonnet），不得由主 agent 自己用 heredoc／`sed -i`／`tee`／`python3 - <<` 寫掉。sub agent 在它自己的 session 裡照樣可以用 Bash 改檔——受約束的是「誰做」，不是「怎麼做」。
+- 反過來，`git diff | wc -l`、跑測試、讀檔這些**驗證動作**用 Bash 完成完全正確，那本來就是主 agent 的職責。
+
 ## 何時該派 sub agent / 何時主 agent 直接做
 
 **該派 sub agent —— 同時滿足：**
