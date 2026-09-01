@@ -1,0 +1,9 @@
+{
+  "name": "agent-dispatch",
+  "version": "1.0.0",
+  "description": "主 agent 派工的流程本體：TDD、UI 視覺比對、執行→驗證→修正循環",
+  "author": {
+    "name": "Sam Lin",
+    "email": "sam82520@gmail.com"
+  }
+}

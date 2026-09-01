@@ -2,8 +2,12 @@
 # 把這個 repo 的設定套用到 ~/.claude。
 #
 # 分工：
-#   plugin（context-handoff / tsgo-lsp）   由 Claude Code 的 marketplace 管，
-#                                          更新走 /plugin update，不經這支腳本
+#   plugin（context-handoff / tsgo-lsp /   由 Claude Code 的 marketplace 管，
+#           context-usage / agent-dispatch）更新走 /plugin update，不經這支腳本
+#                                          ⚠️ 新機器 bootstrap：CLAUDE.md 會指名
+#                                          `agent-dispatch:dev-flows` 等 plugin skill，
+#                                          跑完本腳本後還要 /plugin 安裝，否則那些
+#                                          流程會靜默找不到。
 #   CLAUDE.md / statusline.sh / settings   plugin 管不到，由這支腳本套用
 #
 # settings.json 是「深度合併」而非覆蓋，只寫入本 repo 提供的 key，
