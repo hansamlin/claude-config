@@ -53,7 +53,8 @@
   "enableWorkflows": true,
   "statusLine": {
     "type": "command",
-    "command": "bash __CLAUDE_DIR__/statusline.sh"
+    "command": "bash __CLAUDE_DIR__/statusline.sh",
+    "refreshInterval": 5
   },
   "enabledPlugins": {
     "agent-dispatch@sam-tools": true,
