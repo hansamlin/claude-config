@@ -25,8 +25,8 @@ input=$(cat)
 
 # Extract values using jq
 MODEL=$(echo "$input" | jq -r '.model.display_name')
-SESSION_ID=$(echo "$input" | jq -r '.session_id // empty')
-[ -n "$SESSION_ID" ] && MODEL_SEG="[${SESSION_ID:0:8}] | [$MODEL]" || MODEL_SEG="[$MODEL]"
+VERSION=v$(echo "$input" | jq -r '.version // empty')
+[ -n "$VERSION" ] && MODEL_SEG="$VERSION | $MODEL" || MODEL_SEG="$MODEL"
 
 # Get git branch if in a git repo
 GIT_BRANCH=""
@@ -73,18 +73,18 @@ else
     CONTEXT_SEG=""
 fi
 
-# Build third line: model + 5-hour rate limit as bar + reset time
-FIVE_HOUR_PCT=$(echo "$input" | jq -r '.rate_limits.five_hour.used_percentage // empty')
-if [ -n "$FIVE_HOUR_PCT" ]; then
+# Render a usage bar (10 blocks) + colored percentage for a given used_percentage
+render_bar() {
+    pct="$1"
     # Calculate filled blocks (0-10), rounding to nearest integer
-    FILLED=$(printf "%.0f" "$(echo "$FIVE_HOUR_PCT / 10" | bc -l)")
+    FILLED=$(printf "%.0f" "$(echo "$pct / 10" | bc -l)")
     # Clamp to 0-10
     [ "$FILLED" -lt 0 ] && FILLED=0
     [ "$FILLED" -gt 10 ] && FILLED=10
     EMPTY=$((10 - FILLED))
 
     # Choose color based on percentage
-    PCT_INT=$(printf "%.0f" "$FIVE_HOUR_PCT")
+    PCT_INT=$(printf "%.0f" "$pct")
     if [ "$PCT_INT" -ge 90 ]; then
         BAR_COLOR=$'\e[38;2;210;70;30m'
     elif [ "$PCT_INT" -ge 80 ]; then
@@ -109,6 +109,16 @@ if [ -n "$FIVE_HOUR_PCT" ]; then
         i=$((i + 1))
     done
 
+    printf "%s%s%s%s %s%s%%%s" "$BAR_COLOR" "$FILLED_STR" "$DIM_COLOR" "$EMPTY_STR" "$BAR_COLOR" "$PCT_INT" "$RESET"
+}
+
+# Build third line: model + 5-hour rate limit as bar + reset time + 7-day bar
+THIRD_LINE="${MODEL_SEG}${CONTEXT_SEG}"
+
+FIVE_HOUR_PCT=$(echo "$input" | jq -r '.rate_limits.five_hour.used_percentage // empty')
+if [ -n "$FIVE_HOUR_PCT" ]; then
+    FIVE_HOUR_BAR=$(render_bar "$FIVE_HOUR_PCT")
+
     # Calculate reset time
     RESET_STR=""
     RESETS_AT=$(echo "$input" | jq -r '.rate_limits.five_hour.resets_at // empty')
@@ -126,9 +136,13 @@ if [ -n "$FIVE_HOUR_PCT" ]; then
         fi
     fi
 
-    THIRD_LINE="${MODEL_SEG}${CONTEXT_SEG} | 5h: ${BAR_COLOR}${FILLED_STR}${DIM_COLOR}${EMPTY_STR}${RESET} ${BAR_COLOR}${PCT_INT}%${RESET}${RESET_STR}"
-else
-    THIRD_LINE="${MODEL_SEG}${CONTEXT_SEG}"
+    THIRD_LINE="${THIRD_LINE} | 5h: ${FIVE_HOUR_BAR}${RESET_STR}"
+fi
+
+SEVEN_DAY_PCT=$(echo "$input" | jq -r '.rate_limits.seven_day.used_percentage // empty')
+if [ -n "$SEVEN_DAY_PCT" ]; then
+    SEVEN_DAY_BAR=$(render_bar "$SEVEN_DAY_PCT")
+    THIRD_LINE="${THIRD_LINE} | 7d: ${SEVEN_DAY_BAR}"
 fi
 
 # Output: line 1 (path), line 2 (branch if any), line 3 (model + rate limit)
