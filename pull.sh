@@ -74,25 +74,28 @@ copy statusline.sh
 # 內網服務、機敏檔案位置，家裡的機器本來就連不到，同步過去只會是錯的），
 # 再把本機路徑換回佔位符，這樣 repo 裡不會有個人路徑。
 #
-# enabledPlugins 與 extraKnownMarketplaces 落檔前一律排成升冪：Claude Code 每次
-# 啟用／停用 plugin 都會自行重排這兩個 object 的 key，順序沒有語意（讀設定不看
-# 順序），但每次 pull 回來都會在 git diff 上炸出一整片假異動，把真正的設定變更
-# 埋掉。固定順序後，diff 只會剩下真的加減了什麼。
+# 落檔一律用 `jq -S`（所有層級的 object key 排成升冪）：Claude Code 會自行重寫
+# settings.json，key 順序隨它高興——啟用／停用 plugin 會重排 enabledPlugins，
+# 從 /config 改一個開關則可能讓新 key 落在中間而不是尾端。順序沒有語意（讀設定
+# 不看順序），但每次 pull 回來都會在 git diff 上炸出一整片假異動，把真正的設定
+# 變更埋掉。
+#
+# 只排 enabledPlugins 與 extraKnownMarketplaces 是不夠的（那是這裡的舊作法）：
+# 治不到頂層。而且「比較」本來就用 jq -S 做無序比對，「落檔」卻用 jq . 保留來源
+# 順序——兩邊不一致的後果是「順序變動本身不會觸發寫檔，但只要有任何真實變動觸發
+# 了寫檔，整份就會按本機順序重寫」，於是真異動與假異動混在同一個 diff 裡。
+#
+# 陣列不排（jq -S 也不會動陣列）：permissions.allow 之類的順序可能有語意。
 SETTINGS="$CLAUDE_DIR/settings.json"
 FRAGMENT="$REPO/settings.fragment.json"
 if [ -f "$SETTINGS" ]; then
-    # has($k) 的防護不能省：`.[$k] |= f` 對不存在的 key 會憑空補一個 null 進去。
-    new=$(jq 'del(.feedbackSurveyState) | del(.hooks) | del(.autoMode)
-              | reduce ["enabledPlugins", "extraKnownMarketplaces"][] as $k
-                  (.; if has($k)
-                      then .[$k] |= (to_entries | sort_by(.key) | from_entries)
-                      else . end)' "$SETTINGS" \
+    new=$(jq 'del(.feedbackSurveyState) | del(.hooks) | del(.autoMode)' "$SETTINGS" \
           | sed "s|$CLAUDE_DIR|__CLAUDE_DIR__|g")
     if [ "$(printf '%s' "$new" | jq -S .)" != "$(jq -S . "$FRAGMENT" 2>/dev/null || echo null)" ]; then
         printf '  ~ %s\n' "settings.fragment.json"
         changed=$((changed + 1))
         if [ "$DRY_RUN" = 0 ]; then
-            printf '%s\n' "$new" | jq . > "$FRAGMENT"
+            printf '%s\n' "$new" | jq -S . > "$FRAGMENT"
         fi
     fi
 fi

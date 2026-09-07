@@ -88,7 +88,9 @@ fragment 裡的路徑寫成 `__CLAUDE_DIR__` 佔位符，安裝時填成實際�
 
 `autoMode`（auto mode 的信任邊界：GitLab 主機、內網服務、機敏檔案位置）刻意不同步，`pull.sh` 會把它濾掉。那份描述講的是「這台機器接得到什麼」，家裡的機器連不到公司環境，同步過去只會是錯的；合併只加不減，公司機器上既有的 `autoMode` 也不會被 `install.sh` 動到。
 
-`pull.sh` 落檔前還會把 `enabledPlugins` 與 `extraKnownMarketplaces` 的 key 排成升冪。Claude Code 每次啟用／停用 plugin 都會自行重排這兩個 object，順序沒有語意，但會在 `git diff` 上炸出一整片假異動、把真正的設定變更埋掉。固定順序後 diff 只會剩下真的加減了什麼。
+`pull.sh` 落檔一律用 `jq -S`，把**所有層級**的 object key 排成升冪。Claude Code 會自行重寫 `settings.json`，key 順序隨它高興——啟用／停用 plugin 會重排 `enabledPlugins`，從 `/config` 改一個開關則可能讓新 key 落在中間而不是尾端。順序沒有語意，但會在 `git diff` 上炸出一整片假異動、把真正的設定變更埋掉。固定順序後 diff 只會剩下真的加減了什麼。
+
+（只排 `enabledPlugins` 與 `extraKnownMarketplaces` 是舊作法，治不到頂層；更糟的是「比較」用 `jq -S` 無序、「落檔」用 `jq .` 保留來源順序，於是順序變動本身不觸發寫檔，但只要有任何真實變動觸發了寫檔，整份就按本機順序重寫——真假異動混在同一個 diff 裡。陣列不排，`permissions.allow` 之類的順序可能有語意。）
 
 `install.sh` 會逐一安裝 fragment `enabledPlugins` 裡列出的**每一個** plugin，不只 `sam-tools` 這幾個——`enabledPlugins` 只是啟用旗標，沒真的 install 過的話 plugin 不會落地，hook 不觸發而且毫無錯誤訊息。
 
