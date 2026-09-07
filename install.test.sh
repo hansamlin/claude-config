@@ -105,6 +105,10 @@ if [ "\$1" = "plugin" ] && [ "\$2" = "marketplace" ]; then
     echo "ok \$3 \$4"
     exit 0
 fi
+if [ "\$1" = "plugin" ] && [ "\$2" = "disable" ]; then
+    echo "Disabled \$3"
+    exit 0
+fi
 echo "unexpected: \$*"
 exit 0
 STUB
@@ -113,6 +117,13 @@ STUB
 
 run_install() {
     OUT=$(env HOME="$H" CLAUDE_DIR="$H/.claude" PATH="$H/bin:$PATH" \
+              bash "$INSTALL_SH" 2>&1)
+    RC=$?
+}
+
+# 指定 CLAUDE_DIR 跑（用來測「非預設目錄就整段略過」那條）
+run_install_at() { # run_install_at <claude-dir>
+    OUT=$(env HOME="$H" CLAUDE_DIR="$1" PATH="$H/bin:$PATH" \
               bash "$INSTALL_SH" 2>&1)
     RC=$?
 }
@@ -191,6 +202,104 @@ guards 1
 check "  [守衛] marketplace update 真的被判失敗" "marketplace  $FIRST_MARKET" "$OUT"
 check "沒有印出略過訊息" EMPTY "$(lacks '略過 CLAUDE.md' "$OUT")"
 check "CLAUDE.md 仍等於 repo 版本" EMPTY "$(same_as "$CD/CLAUDE.md" "$SRC_REPO/CLAUDE.md")"
+
+# ── 以下：fragment 標為 false 的 plugin「照裝、裝完再關」 ─────────────────
+# 背景（實測）：`claude plugin install <p>` 會【無條件】把 settings.json 的
+# enabledPlugins[<p>] 寫成 true，即使原本是 false，而且沒有 --disabled 之類的
+# 旗標。settings 合併又發生在 install 迴圈之前——所以光把 fragment 寫成 false
+# 是沒用的，一定會被後面的 install 蓋回去。唯一可行的做法是「照裝，裝完再對
+# value=false 的項目補一次 claude plugin disable」，達成「有落地、可隨時用
+# /plugin 打開、但預設 disabled」。
+#
+# 因此這裡守三件事，缺一不可：
+#   1. value=false 的項目確實被 disable（否則它會是啟用狀態）
+#   2. value=true 的項目【不得】被 disable（否則會誤關別人）
+#   3. disable 必須排在同一個 plugin 的 install 【之後】（排前面等於沒做）
+# 另外守「fragment 裡該項就是 false」——那是規格本身，不是實作細節。
+
+DISABLED_SPEC="context-handoff@sam-tools"
+# 反面樣本不寫死：從 fragment 取仍為 true 的第一個與最後一個
+ENABLED_FIRST=$(jq -r '.enabledPlugins // {} | to_entries[] | select(.value == true) | .key' \
+                "$SRC_REPO/settings.fragment.json" | head -1)
+ENABLED_LAST=$(jq -r '.enabledPlugins // {} | to_entries[] | select(.value == true) | .key' \
+               "$SRC_REPO/settings.fragment.json" | tail -1)
+
+frag_value() { # frag_value <plugin>  → true / false / null
+    jq -r --arg p "$1" '.enabledPlugins[$p] | tostring' "$SRC_REPO/settings.fragment.json"
+}
+
+# 順序檢查：正確回空字串，錯誤回描述（交給 check ... EMPTY 判定）
+disable_after_install() { # disable_after_install <plugin> <calls-file>
+    i=$(grep -n "^plugin install $1\$" "$2" | head -1 | cut -d: -f1)
+    d=$(grep -n "^plugin disable $1\$" "$2" | head -1 | cut -d: -f1)
+    if [ -z "$i" ]; then printf '沒有 install %s 的呼叫' "$1"; return; fi
+    if [ -z "$d" ]; then printf '沒有 disable %s 的呼叫' "$1"; return; fi
+    if [ "$d" -lt "$i" ]; then
+        printf 'disable 在第 %s 行、install 在第 %s 行：disable 排在 install 之前會被蓋回 true' "$d" "$i"
+    fi
+}
+
+# 只取 disable 的呼叫對象（斷言用這個當 haystack，失敗訊息才不會噴整份 log）
+disable_calls() { # disable_calls <calls-file>
+    sed -n 's/^plugin disable //p' "$1" | sort -u
+}
+
+nonempty() { # nonempty <text> <說明>  → 空的話回說明（交給 check ... EMPTY）
+    if [ -z "$1" ]; then printf '%s' "$2"; fi
+}
+
+# 被 disable 的集合是否剛好等於 fragment 裡 value=false 的集合
+disable_set_diff() { # disable_set_diff <calls-file>
+    expected=$(jq -r '.enabledPlugins // {} | to_entries[] | select(.value == false) | .key' \
+               "$SRC_REPO/settings.fragment.json" | sort)
+    actual=$(disable_calls "$1")
+    if [ "$expected" != "$actual" ]; then
+        printf '預期 disable 集合 [%s]，實得 [%s]' "$(echo $expected)" "$(echo $actual)"
+    fi
+}
+
+echo "── 7. fragment 裡 value=false 的 plugin → 照裝，裝完再 disable"
+setup c7
+stub - -
+run_install
+guards 0
+# 非空轉守衛：整段 disable 機制真的有跑（不是「沒人打 disable」讓反面斷言全綠）
+check "  [守衛] 確實打出了 plugin disable（不是整段沒跑）" EMPTY \
+    "$(nonempty "$(disable_calls "$CALLS")" '完全沒有 plugin disable 的呼叫——反面斷言等於沒測到')"
+check "規格：fragment 裡 $DISABLED_SPEC 的值是 false" "false" "$(frag_value "$DISABLED_SPEC")"
+check "$DISABLED_SPEC 有被 disable" "$DISABLED_SPEC" "$(disable_calls "$CALLS")"
+check "disable 排在它自己的 install 之後" EMPTY "$(disable_after_install "$DISABLED_SPEC" "$CALLS")"
+check "value=true 的 $ENABLED_FIRST 沒有被 disable" EMPTY \
+    "$(lacks "$ENABLED_FIRST" "$(disable_calls "$CALLS")")"
+check "value=true 的 $ENABLED_LAST 沒有被 disable" EMPTY \
+    "$(lacks "$ENABLED_LAST" "$(disable_calls "$CALLS")")"
+check "disable 的對象剛好是 fragment 裡 value=false 的那些" EMPTY "$(disable_set_diff "$CALLS")"
+check "合併後的 settings.json 裡 $DISABLED_SPEC 也是 false" "false" \
+    "$(jq -r --arg p "$DISABLED_SPEC" '.enabledPlugins[$p] | tostring' "$CD/settings.json")"
+
+echo "── 8. 同一台機器重跑 install.sh → 冪等，disable 照打"
+# 第二次跑時 settings.json 已經是合併後的樣子，但 install 仍會把 enabledPlugins
+# 寫回 true，所以 disable 必須每次都補打，不能只在「第一次安裝」時做。
+: > "$CALLS"
+run_install
+guards 0
+check "第二次仍然 disable 了 $DISABLED_SPEC" "$DISABLED_SPEC" "$(disable_calls "$CALLS")"
+check "第二次的 disable 也排在 install 之後" EMPTY "$(disable_after_install "$DISABLED_SPEC" "$CALLS")"
+check "第二次仍然沒有誤關 $ENABLED_FIRST" EMPTY \
+    "$(lacks "$ENABLED_FIRST" "$(disable_calls "$CALLS")")"
+check "settings.json 已是最新，不會反覆改寫" "已是最新" "$OUT"
+echo "── 9. CLAUDE_DIR 非預設 → 連 disable 都不准打（claude plugin 只認真實 ~/.claude）"
+# marketplace / install 兩段都因為這個條件整段略過，disable 必須跟它們同進退：
+# 寫成 install 迴圈之後「另起一段」而漏掉這個判斷的話，操作者明明把 CLAUDE_DIR
+# 指到別處，卻會對真實的 ~/.claude 打 disable。
+setup c9
+stub - -
+run_install_at "$H/elsewhere"
+# 本 case 的非空轉守衛方向相反：要證明真的走到了略過分支
+check "  [守衛] 真的走到「CLAUDE_DIR 非預設」的略過分支" "CLAUDE_DIR 非預設" "$OUT"
+check "  [守衛] install.sh exit code = 0" "0" "$RC"
+check "沒有打出任何 plugin install" EMPTY "$(lacks 'plugin install' "$(cat "$CALLS")")"
+check "沒有打出任何 plugin disable" EMPTY "$(lacks 'plugin disable' "$(cat "$CALLS")")"
 
 echo
 echo "PASS=$pass FAIL=$fail"
