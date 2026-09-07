@@ -14,6 +14,8 @@ cd ~/project/claude-config
 
 `install.sh` 會註冊並更新 marketplace、安裝 `enabledPlugins` 列出的每一個 plugin、還原 tsgo 的 TypeScript、並把 `CLAUDE.md` / `statusline.sh` / settings 個人設定套進 `~/.claude`。需要 `jq`。
 
+`enabledPlugins` 裡值為 `false` 的 plugin **照樣安裝，但裝完會被 `claude plugin disable` 關掉**——目前是 `context-handoff`（見下方章節）。
+
 ⚠️ `CLAUDE.md` 刻意排在 plugin 安裝**之後**，且有 plugin 沒裝成就跳過它——因為 `CLAUDE.md` 會指名 `agent-dispatch:dev-flows` 這類 plugin skill，指到不存在的名字不報錯、只靜默跳過流程。
 
 也可以只裝 plugin 而不碰其他設定：
@@ -90,11 +92,15 @@ fragment 裡的路徑寫成 `__CLAUDE_DIR__` 佔位符，安裝時填成實際�
 
 `install.sh` 會逐一安裝 fragment `enabledPlugins` 裡列出的**每一個** plugin，不只 `sam-tools` 這幾個——`enabledPlugins` 只是啟用旗標，沒真的 install 過的話 plugin 不會落地，hook 不觸發而且毫無錯誤訊息。
 
+安裝迴圈**不看 value**，`true` 和 `false` 一律照裝；`false` 的那些在迴圈跑完之後才逐一 `claude plugin disable`。順序不能反：`claude plugin install` 會【無條件】把 `enabledPlugins[<p>]` 寫回 `true`，即使 settings 合併時已經寫成 `false`，而且它沒有 `--disabled` 這種旗標。所以「fragment 寫 false」單獨是無效的，一定會被後面的 install 蓋掉——想標記「裝但預設關」就只能靠這道補打的 disable。這段跟 marketplace／install 兩段一樣，`CLAUDE_DIR` 不是 `~/.claude` 時整段略過。
+
 `CLAUDE_DIR` 只對檔案複製與 settings 合併有效。`claude plugin install` 一律操作真實 `~/.claude`，所以 `CLAUDE_DIR` 指到別處時那兩步會被略過——那個變數是給測試用的，不是完整的沙箱。
 
 ## context 門檻自動 handoff
 
 長 session 的 context 會無聲無息地漲，等到發現時往往已經來不及好好交接。這個 plugin 讓它在固定門檻自動停下來、把進度寫進記憶、提醒你換 session。
+
+⚠️ **這個 plugin 預設不啟用。** 它會在門檻到達時 deny 工具呼叫、打斷正在進行的工作，侵入性比其他幾個高，所以 `settings.fragment.json` 把它標成 `false`，`install.sh` 裝完會關掉它。要用就 `/plugin` 裡打開，或 `claude plugin enable context-handoff@sam-tools`。
 
 ### 運作方式
 

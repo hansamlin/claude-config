@@ -162,6 +162,32 @@ else
     done <<EOF
 $PLUGINS
 EOF
+
+    # fragment 裡 value=false 的項目也要照上面的迴圈裝——實測 `claude plugin
+    # install <p>` 會【無條件】把 settings.json 的 enabledPlugins[<p>] 寫成
+    # true，就算原本是 false，而且沒有 --disabled 這種旗標可用；settings 合併
+    # 又發生在這個 step 之前，所以事先把 fragment 寫成 false 沒有用，一定會被
+    # 這裡的 install 蓋回 true。改成「value=false 就跳過不裝」表面上更省事，
+    # 但 plugin 根本不會落地（installed_plugins.json 沒有它），/plugin 選單裡
+    # 也看不到可以打開的項目——不是「預設關閉」而是「整個裝不起來」。所以正確
+    # 做法是讓它跟其他 plugin 一樣照裝，裝完之後才在這裡補一次
+    # `claude plugin disable`，達成「有落地、隨時可用 /plugin 打開、但預設
+    # disabled」。這一步必須排在上面的 install 迴圈之後，排在前面會被蓋回 true。
+    DISABLED_PLUGINS=$(jq -r '.enabledPlugins // {} | to_entries[] | select(.value == false) | .key' \
+                        "$REPO/settings.fragment.json")
+    while IFS= read -r p; do
+        [ -n "$p" ] || continue
+        log "停用 ${p}（fragment 標為 false）"
+        if [ "$DRY_RUN" = 0 ]; then
+            if out=$(claude plugin disable "$p" 2>&1); then
+                printf '%s\n' "$out" | tail -1 | sed 's/^/    /'
+            else
+                printf '%s\n' "$out" | sed 's/^/    /'
+            fi
+        fi
+    done <<EOF
+$DISABLED_PLUGINS
+EOF
 fi
 
 step "複製 plugin 管不到的檔案"

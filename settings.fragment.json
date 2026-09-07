@@ -61,7 +61,7 @@
     "andrej-karpathy-skills@karpathy-skills": true,
     "code-review@claude-plugins-official": true,
     "code-simplifier@claude-plugins-official": true,
-    "context-handoff@sam-tools": true,
+    "context-handoff@sam-tools": false,
     "context-usage@sam-tools": true,
     "document-skills@anthropic-agent-skills": true,
     "figma@claude-plugins-official": true,
@@ -125,5 +125,6 @@
   "remoteControlAtStartup": false,
   "agentPushNotifEnabled": true,
   "skipAutoPermissionPrompt": true,
-  "voiceEnabled": false
+  "voiceEnabled": false,
+  "autoMemoryEnabled": false
 }
