@@ -54,7 +54,7 @@ permission mode 可能附帶工具偏好——例如 auto 模式指示「盡量�
 - Q1 命中第 2 支或第 3 支
 - Q1 命中第 1 支**且改動含可見版面**（要跑視覺比對第 3 步的截圖定案）
 - Q1 命中第 4 支**且** diff 超過自審門檻
-- 進入〈主 agent 自己動手之後〉或〈sub agent 越權〉且產物要保留（要走〈補救驗證〉）
+- 〈主 agent 自己動手之後〉或〈驗證鐵律〉的 sub agent 越權條判定**要派驗證者或要補測試**時（走〈補救驗證〉）
 
 ## 驗證鐵律（必須遵守）
 
@@ -64,9 +64,9 @@ permission mode 可能附帶工具偏好——例如 auto 模式指示「盡量�
 
 **sub agent 越權時**（做了 briefing 未授權的事：轉綠的改了測試檔、寫測試的順手寫了實作、或自行 commit）：不要因為「測試綠、check 綠」就採信——越權本身就是「它沒照 briefing 走」的證據，產出品質同樣不可推定。主 agent 先在回報裡明講越權事實，再依情形補救：
 
-- **測試檔被動過** → `git checkout -- <測試檔>` 還原到固定基準後重跑；不綠就是取巧，實作作廢重派。機械檢查，不派驗證者。重派要**換人**，並在 briefing 明講上一輪違規了什麼。
-- **自行 commit** → 未 push 就 `git reset --soft <base>`（改動仍在 index，不算還原工作）；已 push 或要保留歷史，則之後驗證一律以 `git diff <base>..HEAD` 為對象，測試檔檢查改成 `git diff <基準 sha> HEAD -- <測試檔>` 為空。
-- **實作由不該寫的人寫了**（測試與實作同一作者）→ 未 commit 時優先留測試、丟實作、確認 red、照常派 Sonnet；要保留這份產出才額外派一個獨立 Opus 驗證者，briefing 明講「這份 code 從未被獨立看過，測試與實作同一作者」，要它優先找為讓測試綠而取巧、測試盲點、改動範圍溢出。briefing 該給／不該給與後續流程見 `agent-dispatch:dev-flows` 的〈補救驗證〉。
+- **測試檔被動過** → 先 `git diff -- <測試檔> > /tmp/subagent-test-diff.txt` 存證，再 `git checkout -- <測試檔>` 還原到固定基準後重跑。不綠 → 看那份 diff 分辨：斷言被放寬／跳過／刪掉 → 取巧，實作作廢重派（**換人**，briefing 明講上一輪違規了什麼）；純 fixture 技術瑕疵（斷言意圖其實正確）→ 依 `agent-dispatch:dev-flows` TDD 第 3 步的例外段處理。機械檢查，不派驗證者。
+- **自行 commit** → 同〈主 agent 自己動手之後〉的「擅自 commit」條；額外：測試檔檢查改成 `git diff <基準 sha> HEAD -- <測試檔>` 為空。
+- **實作由不該寫的人寫了**（寫測試的 sub agent 順手把實作也寫了）→ 測試先寫、且已回報過 red，仍可信：優先留測試、丟實作、確認 red、照常派 Sonnet。要保留這份實作才額外派獨立 Opus 驗證者，briefing 明講「這份 code 從未被獨立看過，測試與實作同一作者」，該給／不該給見 `agent-dispatch:dev-flows` 的〈補救驗證〉。⚠️ 反之，**實作先有、測試後補**（含主 agent 自己補的）→ 測試不可信，見〈補救驗證〉的〈兩個角色都被同一人做掉〉。
 
 越權同時是 briefing 有漏洞的訊號：下次派同類工作前，把缺的那條約束補進 briefing。
 
@@ -75,8 +75,8 @@ permission mode 可能附帶工具偏好——例如 auto 模式指示「盡量�
 察覺主 agent 跳過派工自己實作、或未經要求自己 commit（自己發現或使用者指出）時：**先明講違規了哪一條**，再依下列處理，不可悄悄往下做。
 
 - **還在進行中** → 立刻停手，已完成的部分當中性現況寫進 briefing，剩下的派出去。不要「反正快做完了先做完再說」——停手派出去比做完再補救便宜。
-- **已完成、產物要保留** → 主 agent 對自己的產物**喪失自審資格**（〈何時主 agent 直接做〉的「審 < 300 行 diff」豁免前提是作者不是自己）：不論 diff 幾行、不論 Q1 原本命中哪一支，一律當成「未經驗證的交付物」進 `agent-dispatch:dev-flows`〈執行 → 驗證 → 修正 循環〉**第 2 步**（派 fresh Opus 驗證者），驗收標準沿用 Q1 原本那一支，briefing 依〈補救驗證〉。後續修正也必須派出去，主 agent 不得自己改。連測試也是自己寫的 → 測試作廢重寫，見〈補救驗證〉。
-- **擅自 commit**（與上一條正交，先問有沒有 push）→ 未 push：`git reset --soft <base>` 只拿掉 commit、保留全部改動，驗證通過後再依 `anthropic-skills:git-commit` 重 commit。已 push：不 amend、不 force push，驗證範圍改成 `git diff <base>..HEAD`，修正用後續 commit。commit 混了不相干改動 → 先拆開，驗證範圍只含本次任務。
+- **已完成、產物要保留** → 主 agent 對自己的產物**喪失自審資格**（〈何時主 agent 直接做〉的「審 < 300 行 diff」豁免前提是作者不是自己；喪失的是「自審**可取代**獨立驗證」的資格，不是不准看——〈驗證鐵律〉的便宜複核照做）：不論 diff 幾行、不論 Q1 原本命中哪一支，一律當成「未經驗證的交付物」進 `agent-dispatch:dev-flows`〈執行 → 驗證 → 修正 循環〉**第 2 步**（派 fresh Opus 驗證者），驗收標準沿用 Q1 原本那一支，briefing 依〈補救驗證〉。後續修正也必須派出去，主 agent 不得自己改。Q1 原本是第 2 支 → 先補測試（見〈補救驗證〉的〈事後 TDD〉），不是只派驗證者讀 diff。測試也是自己寫的 → 測試作廢重寫，見〈補救驗證〉。
+- **擅自 commit**（與上一條正交，先問有沒有 push）→ 未 push：`git reset --soft <base>` 只拿掉 commit、保留全部改動，驗證通過後再依 `anthropic-skills:git-commit` 重 commit。已 push：不 amend、不 force push，驗證範圍改成 `git diff <base>..HEAD`，修正用後續 commit 或 revert，並在回報明講「歷史中有一個未經驗證的 commit `<sha>`」（bisect 會踩到）。commit 混了不相干改動 → 先拆開，驗證範圍只含本次任務。
 - 使用者明說不用驗證 → 照辦，但回報留一句「此產物未經獨立驗證」，不再堅持。
 
 **宣告完成前自查一次：這次任務的實作 diff 是誰寫的？** 自己寫的就走本節。
