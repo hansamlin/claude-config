@@ -4,10 +4,7 @@
   "agentPushNotifEnabled": true,
   "alwaysThinkingEnabled": true,
   "askUserQuestionTimeout": "never",
-  "attribution": {
-    "commit": "",
-    "pr": ""
-  },
+  "attribution": false,
   "autoCompactEnabled": true,
   "autoContinueAtUsageLimit": true,
   "autoDreamEnabled": true,
@@ -65,7 +62,15 @@
   },
   "feedbackDrafts": "notify",
   "language": "Chinese (Taiwan)",
-  "model": "opus[1m]",
+  "model": "opus",
+  "modelSettings": {
+    "claude-fable-5-1": {
+      "effortLevel": "medium"
+    },
+    "claude-opus-5-5": {
+      "effortLevel": "medium"
+    }
+  },
   "permissions": {
     "allow": [
       "Edit",
