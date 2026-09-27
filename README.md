@@ -12,7 +12,7 @@ cd ~/project/claude-config
 ./install.sh
 ```
 
-`install.sh` 會註冊並更新 marketplace、安裝 `enabledPlugins` 列出的每一個 plugin、還原 tsgo 的 TypeScript、並把 `CLAUDE.md` / `statusline.sh` / settings 個人設定套進 `~/.claude`。需要 `jq`。
+`install.sh` 會註冊並更新 marketplace、安裝 `enabledPlugins` 列出的每一個 plugin、還原 tsgo 的 TypeScript、並把 `AGENTS.md`（裝成 `~/.claude/CLAUDE.md`）/ `statusline.sh` / settings 個人設定套進 `~/.claude`。需要 `jq`。
 
 `enabledPlugins` 裡值為 `false` 的 plugin **照樣安裝，但裝完會被 `claude plugin disable` 關掉**——目前是 `context-handoff`（見下方章節）。
 
@@ -47,20 +47,20 @@ Claude Code 餵給 statusline hook 的 payload 裡，transcript 沒記。只裝 
 
 | 檔案 | 用途 |
 | --- | --- |
-| `CLAUDE.md` | user scope 全域指示（sub agent 派工與模型路由、驗證規則、本機 Git 環境） |
+| `AGENTS.md` | user scope 全域指示（sub agent 派工、驗證規則、本機 Git 環境）。裝成 `~/.claude/CLAUDE.md`——Claude Code 全域層級只讀 `CLAUDE.md`，不讀 `~/.claude/AGENTS.md` |
 | `statusline.sh` | 路徑 / 分支 / session id 前 8 碼 / 模型 / context 用量 / 5 小時額度，另把 `context_window` 落檔給 `context-usage` plugin 讀 |
 | `settings.fragment.json` | permissions、env、theme、language 等個人設定 |
 
 `skills/`（`handoff` 與 `context-usage` 以外）刻意不收，內含公司專案相關內容。
 
-**這個 repo 只適合維持 private**：`CLAUDE.md` 帶有公司脈絡（GitLab / `glab` 工作流程），要轉 public 前必須重新逐檔稽核。
+**這個 repo 只適合維持 private**：`AGENTS.md` 帶有公司脈絡（GitLab / `glab` 工作流程），要轉 public 前必須重新逐檔稽核。
 
 ## 更新
 
 | 改了什麼 | 怎麼生效 |
 | --- | --- |
 | plugin 內容（hook、skill、LSP 設定） | `/plugin marketplace update` |
-| `CLAUDE.md` / `statusline.sh` / settings | 重跑 `./install.sh` |
+| `AGENTS.md` / `statusline.sh` / settings | 重跑 `./install.sh` |
 
 ⚠️ `context-usage` 橫跨兩列：skill 與指令走 marketplace，百分比所需的快取走 `statusline.sh`。
 只做其中一邊會得到「能跑但沒有百分比」的半殘狀態，`context-usage` 的輸出會標明是哪一種來源。
@@ -72,7 +72,7 @@ Claude Code 餵給 statusline hook 的 payload 裡，transcript 沒記。只裝 
 ./pull.sh
 ```
 
-`pull.sh` 只同步 `CLAUDE.md`、`statusline.sh`、以及 `settings.json` 的個人設定。**plugin 內容請直接在 repo 裡改**——`~/.claude/plugins/` 底下是 Claude Code 的快取，改那裡會被下次更新蓋掉。
+`pull.sh` 只同步 `~/.claude/CLAUDE.md`（寫回 `AGENTS.md`）、`statusline.sh`、以及 `settings.json` 的個人設定。**plugin 內容請直接在 repo 裡改**——`~/.claude/plugins/` 底下是 Claude Code 的快取，改那裡會被下次更新蓋掉。
 
 ## `settings.json` 是合併不是覆蓋
 
