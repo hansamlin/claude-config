@@ -3,10 +3,9 @@
 #
 # 分工：
 #   plugin（context-handoff / tsgo-lsp /   內容由 Claude Code 的 marketplace 管，
-#           context-usage / agent-dispatch）本腳本負責註冊來源＋逐一 install
+#           context-usage）                本腳本負責註冊來源＋逐一 install
 #
-#   ⚠️ CLAUDE.md 會指名 `agent-dispatch:dev-flows` 這類 plugin skill，指到不存在的
-#      名字不會報錯、只會靜默跳過流程。所以本腳本刻意把 CLAUDE.md 排在 plugin
+#   ⚠️ CLAUDE.md 若指名 plugin skill，指到不存在的名字不會報錯、只會靜默跳過流程。所以本腳本刻意把 CLAUDE.md 排在 plugin
 #      安裝「之後」——plugin 沒裝成就不動 CLAUDE.md，寧可整台維持舊版的自洽狀態。
 #   CLAUDE.md / statusline.sh / settings   plugin 管不到，由這支腳本套用
 #                                          （CLAUDE.md 的套用時機見上面那條 ⚠️）
@@ -202,8 +201,7 @@ if [ "$DRY_RUN" = 0 ]; then
     chmod +x "$CLAUDE_DIR/statusline.sh"
 fi
 
-# CLAUDE.md 只留 router，流程本體指名 `agent-dispatch:dev-flows` 這類 plugin skill。
-# 指到不存在的名字不報錯、只靜默跳過流程——所以 plugin 沒全裝成就不動它，
+# CLAUDE.md 若指名 plugin skill，指到不存在的名字不報錯、只靜默跳過流程——所以 plugin 沒全裝成就不動它，
 # 讓整台維持「舊 CLAUDE.md ＋ 舊 plugin」的自洽狀態，重跑腳本即可補上。
 if [ -n "$PLUGIN_FAILED" ]; then
     log "⚠ 有 plugin 未裝成（見上），略過 CLAUDE.md──避免它指向不存在的 skill"

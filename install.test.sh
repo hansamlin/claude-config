@@ -1,8 +1,7 @@
 #!/usr/bin/env bash
 # install.sh 的「plugin 沒裝成就不套用 CLAUDE.md」閘門驗證。
 #
-# 為什麼要有這支：CLAUDE.md 只留 router，流程本體指名 `agent-dispatch:dev-flows`
-# 這類 plugin skill。指到不存在的名字不會報錯、只會靜默跳過整段流程——所以
+# 為什麼要有這支：CLAUDE.md 若指名 plugin skill，指到不存在的名字不會報錯、只會靜默跳過整段流程——所以
 # install.sh 刻意在 plugin 全裝成之前不動 CLAUDE.md。這個保護是「不做某件事」，
 # 壞掉時畫面上看不出任何差別（CLAUDE.md 照樣被複製、安裝照樣印成功），只有
 # 之後某次流程被靜默跳過才會發現。故必須有測試守著。
