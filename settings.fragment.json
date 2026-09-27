@@ -15,7 +15,6 @@
   "effortLevel": "high",
   "enableWorkflows": true,
   "enabledPlugins": {
-    "agent-dispatch@sam-tools": true,
     "andrej-karpathy-skills@karpathy-skills": true,
     "code-review@claude-plugins-official": true,
     "code-simplifier@claude-plugins-official": true,

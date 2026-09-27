@@ -2,7 +2,7 @@
 # 反向同步：把 ~/.claude 的改動抓回這個 repo，之後再 git diff / commit。
 #
 # 範圍限於「plugin 管不到、又容易在本機被改掉」的三樣：
-#   CLAUDE.md、statusline.sh、settings.json 的個人設定
+#   CLAUDE.md（repo 內為 AGENTS.md）、statusline.sh、settings.json 的個人設定
 #
 # plugin 內容（hook script、handoff skill、tsgo 設定）不在此列——那些請直接在
 # repo 裡改，再用 /plugin marketplace update 讓 Claude Code 取得。~/.claude/plugins
@@ -45,11 +45,11 @@ printf '來源：%s\n目標：%s\n\n' "$CLAUDE_DIR" "$REPO"
 
 changed=0
 
-copy() { # copy <相對路徑>
+copy() { # copy <~/.claude 下的相對路徑> [repo 內的相對路徑，預設同名]
     # 分行宣告：`local a=$1 b=$a` 在 set -u 下會因 a 尚未綁定而中止
     local rel="$1"
     local src="$CLAUDE_DIR/$rel"
-    local dst="$REPO/$rel"
+    local dst="$REPO/${2:-$rel}"
     if [ ! -f "$src" ]; then
         printf '  ⚠ 來源不存在，略過：%s\n' "$rel"
         return
@@ -65,7 +65,7 @@ copy() { # copy <相對路徑>
     fi
 }
 
-copy CLAUDE.md
+copy CLAUDE.md AGENTS.md   # 全域只讀 CLAUDE.md，repo 內叫 AGENTS.md
 copy statusline.sh
 
 # settings.json → settings.fragment.json

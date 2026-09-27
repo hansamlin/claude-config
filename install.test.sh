@@ -1,8 +1,7 @@
 #!/usr/bin/env bash
 # install.sh 的「plugin 沒裝成就不套用 CLAUDE.md」閘門驗證。
 #
-# 為什麼要有這支：CLAUDE.md 只留 router，流程本體指名 `agent-dispatch:dev-flows`
-# 這類 plugin skill。指到不存在的名字不會報錯、只會靜默跳過整段流程——所以
+# 為什麼要有這支：CLAUDE.md 若指名 plugin skill，指到不存在的名字不會報錯、只會靜默跳過整段流程——所以
 # install.sh 刻意在 plugin 全裝成之前不動 CLAUDE.md。這個保護是「不做某件事」，
 # 壞掉時畫面上看不出任何差別（CLAUDE.md 照樣被複製、安裝照樣印成功），只有
 # 之後某次流程被靜默跳過才會發現。故必須有測試守著。
@@ -23,7 +22,7 @@
 #   bash install.test.sh
 # 要對變異過的副本跑（mutation testing）可覆寫 INSTALL_SH——注意 install.sh 用
 # `dirname $0` 推導來源目錄，副本旁邊必須同時有 settings.fragment.json /
-# statusline.sh / CLAUDE.md：
+# statusline.sh / AGENTS.md：
 #   INSTALL_SH=/tmp/mut/install.sh bash install.test.sh
 set -uo pipefail
 
@@ -169,7 +168,7 @@ stub - -
 run_install
 guards 0
 check "沒有印出略過訊息" EMPTY "$(lacks '略過 CLAUDE.md' "$OUT")"
-check "CLAUDE.md 內容等於 repo 版本" EMPTY "$(same_as "$CD/CLAUDE.md" "$SRC_REPO/CLAUDE.md")"
+check "CLAUDE.md 內容等於 repo 版本" EMPTY "$(same_as "$CD/CLAUDE.md" "$SRC_REPO/AGENTS.md")"
 check "本來就沒有舊檔，不該產生 .bak" EMPTY "$(ls "$CD/CLAUDE.md.bak" 2>/dev/null)"
 
 echo "── 4. plugin 全部成功 + 目標有不同的舊檔 → 先備份再覆蓋"
@@ -179,17 +178,17 @@ stub - -
 run_install
 guards 0
 check "輸出提到備份" "備份既有 CLAUDE.md" "$OUT"
-check "CLAUDE.md 換成 repo 版本" EMPTY "$(same_as "$CD/CLAUDE.md" "$SRC_REPO/CLAUDE.md")"
+check "CLAUDE.md 換成 repo 版本" EMPTY "$(same_as "$CD/CLAUDE.md" "$SRC_REPO/AGENTS.md")"
 # 比對 .bak 的「內容」而非「存在」：cp 兩邊寫反了也會有檔案
 check ".bak 是舊的那一份" EMPTY "$(same_as "$CD/CLAUDE.md.bak" "$SENTINEL")"
 
 echo "── 5. plugin 全部成功 + 目標舊檔內容相同 → 不產生多餘的 .bak"
 setup c5
-cp "$SRC_REPO/CLAUDE.md" "$CD/CLAUDE.md"
+cp "$SRC_REPO/AGENTS.md" "$CD/CLAUDE.md"
 stub - -
 run_install
 guards 0
-check "內容不變" EMPTY "$(same_as "$CD/CLAUDE.md" "$SRC_REPO/CLAUDE.md")"
+check "內容不變" EMPTY "$(same_as "$CD/CLAUDE.md" "$SRC_REPO/AGENTS.md")"
 check "內容相同就不備份" EMPTY "$(ls "$CD/CLAUDE.md.bak" 2>/dev/null)"
 
 echo "── 6. marketplace update 失敗但 plugin 全裝成 → CLAUDE.md 照常套用"
@@ -201,7 +200,7 @@ run_install
 guards 1
 check "  [守衛] marketplace update 真的被判失敗" "marketplace  $FIRST_MARKET" "$OUT"
 check "沒有印出略過訊息" EMPTY "$(lacks '略過 CLAUDE.md' "$OUT")"
-check "CLAUDE.md 仍等於 repo 版本" EMPTY "$(same_as "$CD/CLAUDE.md" "$SRC_REPO/CLAUDE.md")"
+check "CLAUDE.md 仍等於 repo 版本" EMPTY "$(same_as "$CD/CLAUDE.md" "$SRC_REPO/AGENTS.md")"
 
 # ── 以下：fragment 標為 false 的 plugin「照裝、裝完再關」 ─────────────────
 # 背景（實測）：`claude plugin install <p>` 會【無條件】把 settings.json 的
