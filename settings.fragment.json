@@ -68,6 +68,9 @@
     },
     "claude-opus-5-5": {
       "effortLevel": "medium"
+    },
+    "claude-sonnet-5-5": {
+      "effortLevel": "medium"
     }
   },
   "permissions": {
@@ -124,9 +127,6 @@
   },
   "voiceEnabled": false,
   "worktree": {
-    "baseRef": "head",
-    "symlinkDirectories": [
-      "node_modules"
-    ]
+    "baseRef": "head"
   }
 }
