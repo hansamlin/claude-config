@@ -26,6 +26,7 @@
     "context-usage@sam-tools": true,
     "document-skills@anthropic-agent-skills": true,
     "figma@claude-plugins-official": true,
+    "language-reminder@sam-tools": true,
     "skill-creator@claude-plugins-official": true,
     "tsgo-lsp@sam-tools": true,
     "watch@claude-video": true
@@ -64,7 +65,7 @@
     }
   },
   "feedbackDrafts": "notify",
-  "language": "Chinese (Taiwan)",
+  "language": "繁體中文（台灣用語）",
   "model": "opus",
   "modelSettings": {
     "claude-fable-5-1": {

@@ -1,0 +1,9 @@
+{
+  "name": "language-reminder",
+  "version": "1.0.0",
+  "description": "每次工具呼叫後注入繁中提醒，避免長工具迴圈中回覆漂成英文",
+  "author": {
+    "name": "Sam Lin",
+    "email": "sam82520@gmail.com"
+  }
+}
