@@ -19,6 +19,11 @@
       "name": "context-usage",
       "source": "./plugins/context-usage",
       "description": "查詢當前 session 的 context 用量與百分比（需搭配 statusline.sh 才有百分比）"
+    },
+    {
+      "name": "language-reminder",
+      "source": "./plugins/language-reminder",
+      "description": "PostToolUse 注入繁中提醒，避免長工具迴圈中回覆漂成英文"
     }
   ]
 }

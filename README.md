@@ -25,6 +25,7 @@ cd ~/project/claude-config
 /plugin install context-handoff@sam-tools
 /plugin install tsgo-lsp@sam-tools
 /plugin install context-usage@sam-tools
+/plugin install language-reminder@sam-tools
 ```
 
 private repo 可以直接當 marketplace source——Claude Code 用 SSH clone，有金鑰就拉得到。
@@ -38,6 +39,7 @@ private repo 可以直接當 marketplace source——Claude Code 用 SSH clone�
 | `context-handoff` | `UserPromptSubmit` / `PreToolUse` / `PostToolUse` / `PostCompact` hook + `handoff` skill |
 | `tsgo-lsp` | TypeScript 7 native (tsgo) LSP server |
 | `context-usage` | `context-usage` 指令 + 同名 skill：查當前 session 的 context 用量與百分比 |
+| `language-reminder` | `PostToolUse` hook：每次工具呼叫後注入一句繁中提醒，避免回覆漂成英文 |
 
 ⚠️ `context-usage` 的**百分比**需要 `statusline.sh` 配合（見下一節）——context window 大小只出現在
 Claude Code 餵給 statusline hook 的 payload 裡，transcript 沒記。只裝 plugin 不跑 `install.sh` 的話，
@@ -391,6 +393,14 @@ mutation 紀錄：round-trip 改成取第一筆 cwd → FAIL=1；腳本端拿掉
 - **狀態檔一定會殘留，回收完全靠 7 天清掃**。`sa-<agent_id>` 從 2.3.0 起沒有任何人會主動刪（無害：deny 已經發過，不會死鎖），**交接檔 `subagent-handoff-*.md` 也一樣會留**——那是有內容的檔案，可能好幾 KB。唯一的清掃是 `check.sh` 裡那支 7 天 `find`；它已經移到所有早退之前，每一則使用者訊息都會跑一次，但**前提是這台機器上有人在用互動式主 session**。純跑 `claude -p` 的機器沒有 `UserPromptSubmit`，仍然不會清
 - **交接過的 session 被硬中斷之後有四條逃生口**：再打一次 `/handoff`（或純文字 `handoff` / `交接`）、`/compact`（compact 邊界之後那次交接就過期了）、`CC_HANDOFF_DISABLE=1`，以及第四條——訊息以 `<tag>` 尖角標籤開頭時會被判定成系統注入（為了不 erase 背景任務完成通知），繞過 block 只拿到提醒。真人打 `<x>繼續做這件事` 就能鑽過去。這是刻意保留的溫和後門（真人幾乎不會這樣開頭），不打算收窄
 - **改了 hook 行為記得 bump `plugin.json` 的 `version`**：plugin 快取是按版本號分目錄的（`~/.claude/plugins/cache/sam-tools/context-handoff/<version>/`），版本沒動的話 `/plugin marketplace update` 之後可能仍在跑舊碼——又是一個「裝好了、沒錯誤、行為是舊的」情境。
+
+## language-reminder
+
+`settings.fragment.json` 的 `language` 只出現在 system prompt。長時間連續工具呼叫的回合裡，每次工具呼叫後都有英文系統提醒貼在最新 context，遙遠的 language 指示被蓋過，回覆就漂成英文。
+
+`remind.sh` 掛在 `PostToolUse`（不設 matcher，所有工具都觸發），經 `hookSpecificOutput.additionalContext` 在每個工具結果旁注入一句繁中提醒，讓指示永遠貼近最新 context。輸出是固定字串，不讀 stdin 內容、不依賴 `jq`。sub agent 裡的工具呼叫同樣會觸發，提醒一併生效。
+
+代價是每次工具呼叫多幾十 token，所以提醒刻意寫短。`PostToolUse` 的消費端沒有「續跑」旗標（見上方 context-handoff 的說明），不會踩到 `SubagentStop` 那類問題。
 
 ## tsgo-lsp
 
