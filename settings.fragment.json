@@ -28,8 +28,7 @@
     "figma@claude-plugins-official": true,
     "language-reminder@sam-tools": true,
     "skill-creator@claude-plugins-official": true,
-    "tsgo-lsp@sam-tools": true,
-    "watch@claude-video": true
+    "tsgo-lsp@sam-tools": true
   },
   "env": {
     "CLAUDE_CODE_EXPERIMENTAL_AGENT_TEAMS": "0",
@@ -42,12 +41,6 @@
     "anthropic-agent-skills": {
       "source": {
         "repo": "anthropics/skills",
-        "source": "github"
-      }
-    },
-    "claude-video": {
-      "source": {
-        "repo": "bradautomates/claude-video",
         "source": "github"
       }
     },
