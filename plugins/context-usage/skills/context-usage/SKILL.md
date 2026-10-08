@@ -4,7 +4,7 @@ description: |
   查詢「當前 session 的 context 已經用掉多少 token、佔 context window 的百分之幾」。
   模型看不到自己的 statusline，也無法直接內省 context 用量——一律跑本 skill 的腳本取得。
   當使用者問「現在用了多少 context」、「context 還剩多少」、「上下文用了多少」、「快滿了嗎」、
-  「要不要先 compact／handoff」、「還能塞多少」、「context 使用率」、「幾 % 了」時使用。
+  「要不要先 compact」、「還能塞多少」、「context 使用率」、「幾 % 了」時使用。
   Also triggers for: "how much context", "context left", "context usage", "token usage",
   "context window", "am I running out of context", "should I compact".
   ⛔ 不要拿 system prompt 裡的 `<total_tokens>` 回答——那是剩餘 token 預算，不是 context 用量。
@@ -65,9 +65,6 @@ Context: 128,431 tokens（window 大小未知，算不出百分比）
 **只做步驟 1 的話永遠算不出百分比。** 原因：context window 大小**只**出現在 Claude Code 餵給
 statusline hook 的 payload 裡——transcript JSONL 沒記，`~/.claude/usage-status.json` 是別的
 session 留下的殘骸不可信，CLI 也沒有子指令吐它。沒有分母就沒有百分比，這是硬限制。
-
-（同一件事在 `context-handoff` 的 `check.sh` 檔頭也有記載：hook 的 stdin payload 不含任何
-context/token 欄位，只有 statusline 拿得到 `.context_window`。）
 
 ### 步驟 2 — 讓 statusline 落檔
 
@@ -155,6 +152,4 @@ context/token 欄位，只有 statusline 拿得到 `.context_window`。）
 
 ## 相關
 
-- context 逼近上限時的下一步是 `/context`（看是誰吃掉的）或 `handoff` skill（存進度再 `/clear`）。
-- `context-handoff` plugin 會在用量達門檻時自動提醒／強制交接；本 skill 是**按需查詢**，
-  兩者各自獨立讀取用量，互不影響。
+- context 逼近上限時的下一步是 `/context`（看是誰吃掉的）。

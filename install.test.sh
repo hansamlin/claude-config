@@ -216,15 +216,24 @@ check "CLAUDE.md 仍等於 repo 版本" EMPTY "$(same_as "$CD/CLAUDE.md" "$SRC_R
 #   3. disable 必須排在同一個 plugin 的 install 【之後】（排前面等於沒做）
 # 另外守「fragment 裡該項就是 false」——那是規格本身，不是實作細節。
 
-DISABLED_SPEC="context-handoff@sam-tools"
+# 目前 repo 的 fragment 沒有任何 value=false 的項目，所以 7–9 節改在「暫時副本」上跑：
+# 複製整個 repo（不含 .git），把挑中的 plugin 在副本的 fragment 裡改成 false。
+# install.sh 用 `dirname $0` 推導來源目錄，所以副本內的 install.sh 讀的是副本的 fragment。
+DISABLED_SPEC="$BROKEN_PLUGIN"
+FIX_REPO="$TMP/fixrepo"
+mkdir -p "$FIX_REPO"
+(cd "$SRC_REPO" && tar --exclude=.git -cf - .) | tar -xf - -C "$FIX_REPO"
+jq --arg p "$DISABLED_SPEC" '.enabledPlugins[$p] = false' "$SRC_REPO/settings.fragment.json" \
+    > "$FIX_REPO/settings.fragment.json"
+INSTALL_SH="$FIX_REPO/install.sh"
 # 反面樣本不寫死：從 fragment 取仍為 true 的第一個與最後一個
 ENABLED_FIRST=$(jq -r '.enabledPlugins // {} | to_entries[] | select(.value == true) | .key' \
-                "$SRC_REPO/settings.fragment.json" | head -1)
+                "$FIX_REPO/settings.fragment.json" | head -1)
 ENABLED_LAST=$(jq -r '.enabledPlugins // {} | to_entries[] | select(.value == true) | .key' \
-               "$SRC_REPO/settings.fragment.json" | tail -1)
+               "$FIX_REPO/settings.fragment.json" | tail -1)
 
 frag_value() { # frag_value <plugin>  → true / false / null
-    jq -r --arg p "$1" '.enabledPlugins[$p] | tostring' "$SRC_REPO/settings.fragment.json"
+    jq -r --arg p "$1" '.enabledPlugins[$p] | tostring' "$FIX_REPO/settings.fragment.json"
 }
 
 # 順序檢查：正確回空字串，錯誤回描述（交給 check ... EMPTY 判定）
@@ -250,7 +259,7 @@ nonempty() { # nonempty <text> <說明>  → 空的話回說明（交給 check .
 # 被 disable 的集合是否剛好等於 fragment 裡 value=false 的集合
 disable_set_diff() { # disable_set_diff <calls-file>
     expected=$(jq -r '.enabledPlugins // {} | to_entries[] | select(.value == false) | .key' \
-               "$SRC_REPO/settings.fragment.json" | sort)
+               "$FIX_REPO/settings.fragment.json" | sort)
     actual=$(disable_calls "$1")
     if [ "$expected" != "$actual" ]; then
         printf '預期 disable 集合 [%s]，實得 [%s]' "$(echo $expected)" "$(echo $actual)"
