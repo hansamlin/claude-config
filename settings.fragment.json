@@ -64,11 +64,15 @@
     "claude-fable-5-1": {
       "effortLevel": "medium"
     },
+    "claude-haiku-5-5": {
+      "autoCompactWindow": 100000,
+      "effortLevel": "high"
+    },
     "claude-opus-5-5": {
       "effortLevel": "medium"
     },
     "claude-sonnet-5-5": {
-      "effortLevel": "medium"
+      "effortLevel": "high"
     }
   },
   "permissions": {
