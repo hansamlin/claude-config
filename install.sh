@@ -2,8 +2,8 @@
 # 把這個 repo 的設定套用到 ~/.claude。
 #
 # 分工：
-#   plugin（context-handoff / tsgo-lsp /   內容由 Claude Code 的 marketplace 管，
-#           context-usage）                本腳本負責註冊來源＋逐一 install
+#   plugin（tsgo-lsp / context-usage /     內容由 Claude Code 的 marketplace 管，
+#           language-reminder 等）         本腳本負責註冊來源＋逐一 install
 #
 #   ⚠️ CLAUDE.md 若指名 plugin skill，指到不存在的名字不會報錯、只會靜默跳過流程。所以本腳本刻意把 CLAUDE.md 排在 plugin
 #      安裝「之後」——plugin 沒裝成就不動 CLAUDE.md，寧可整台維持舊版的自洽狀態。
@@ -29,7 +29,7 @@
 #       `[[ ]]`、陣列、`<<<`、`${BASH_SOURCE[0]}`、無條件的 `set -o pipefail`。
 #       有人打 `sh install.sh` 時 bash 是逐段剖析執行，錯誤會等到前面幾步都
 #       跑完、半套設定已寫入 ~/.claude 之後才炸，且訊息不會說做了哪些。
-#       要餵迴圈請用 here-doc，見下方。check.test.sh 第 14 節會擋。
+#       要餵迴圈請用 here-doc，見下方。
 
 set -eu
 # pipefail 不是 POSIX，dash 沒有；有才開，沒有就算了。
@@ -253,9 +253,6 @@ step "完成"
 cat <<EOF
   驗證：
     bash "$REPO/install.test.sh"
-    bash "$REPO/plugins/context-handoff/scripts/check.test.sh"
-    bash "$REPO/plugins/context-handoff/scripts/subagent-check.test.sh"
-    bash "$REPO/plugins/context-handoff/scripts/subagent-post.test.sh"
     bash "$REPO/plugins/context-usage/scripts/context-usage.test.sh"
     bash "$REPO/plugins/language-reminder/scripts/remind.test.sh"
     context-usage   確認「來源」那行是 statusline 快取（不是 transcript）

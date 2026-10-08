@@ -4,7 +4,7 @@
 # 範圍限於「plugin 管不到、又容易在本機被改掉」的三樣：
 #   CLAUDE.md（repo 內為 AGENTS.md）、statusline.sh、settings.json 的個人設定
 #
-# plugin 內容（hook script、handoff skill、tsgo 設定）不在此列——那些請直接在
+# plugin 內容（hook script、skill、tsgo 設定）不在此列——那些請直接在
 # repo 裡改，再用 /plugin marketplace update 讓 Claude Code 取得。~/.claude/plugins
 # 底下是 Claude Code 的快取，改那裡會被下次更新蓋掉。
 #
@@ -19,7 +19,7 @@
 # 註：不要引入 bashism（process substitution `< <(cmd)`、`[[ ]]`、陣列、
 #     `<<<`、`${BASH_SOURCE[0]}`、無條件的 `set -o pipefail`）。有人打
 #     `sh pull.sh` 時 bash 是逐段剖析執行，錯誤會等到前面幾步都跑完才炸，
-#     留下做到一半的狀態。check.test.sh 第 14 節會擋。
+#     留下做到一半的狀態。
 
 set -eu
 # pipefail 不是 POSIX，dash 沒有；有才開，沒有就算了。
@@ -69,7 +69,7 @@ copy CLAUDE.md AGENTS.md   # 全域只讀 CLAUDE.md，repo 內叫 AGENTS.md
 copy statusline.sh
 
 # settings.json → settings.fragment.json
-# 去掉純本機 UI 狀態、hooks（由 context-handoff plugin 提供），以及 autoMode
+# 去掉純本機 UI 狀態、hooks，以及 autoMode
 # （auto mode 的信任邊界描述的是「這台機器接得到什麼」——公司的 GitLab 主機、
 # 內網服務、機敏檔案位置，家裡的機器本來就連不到，同步過去只會是錯的），
 # 再把本機路徑換回佔位符，這樣 repo 裡不會有個人路徑。
