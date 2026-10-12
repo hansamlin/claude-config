@@ -16,7 +16,7 @@ permission mode 的工具偏好（例如偏好用 Bash 改檔）只決定「用�
 | --- | --- | --- | --- | --- |
 | 1 | 寫測試 | `haiku`（透過 herdr 時用 cursor-agent） | `high` | 只寫測試，回報 red 且原因是功能未實作 |
 | 2 | review 測試 | `opus` | `medium` | 只讀不改；檢查是否忠於任務、夠嚴謹、涵蓋邊界、無法取巧轉綠。只回「通過」或具體修正清單 |
-| 3 | 實作 | `haiku` | `high` | 與寫測試者不同的 agent；只改實作讓測試轉綠，不碰測試檔 |
+| 3 | 實作 | `haiku`（透過 herdr 時用 cursor-agent） | `high` | 與寫測試者不同的 agent；只改實作讓測試轉綠，不碰測試檔 |
 
 - review 做一輪：有修正就交回寫測試者修，修完由主 agent 自己確認 red，接著進步驟 3。
 - briefing 寫明任務原文、角色邊界（不越權、不 commit）與相關檔案路徑，不貼檔案內容。
