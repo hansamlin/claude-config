@@ -8,13 +8,15 @@
 
 permission mode 的工具偏好（例如偏好用 Bash 改檔）只決定「用什麼工具」，不改變「該派出去的實作由誰寫」。
 
+briefing 寫明任務原文、角色邊界（不越權、不 commit）與相關檔案路徑，不貼檔案內容。
+
 ## 模型路由
 
 | 角色 | `model` | `effort` |
 | --- | --- | --- |
 | 寫測試、實作 | `haiku` | `high` |
 | review 測試 | `opus` | `medium` |
-| UI 截圖檢查 | `opus` | — |
+| UI 截圖檢查 | `opus` | `medium` |
 
 - 每次呼叫都明確帶 `model` 與 `effort`（需 Claude Code ≥ 2.1.292）。
 
