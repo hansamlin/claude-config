@@ -20,10 +20,6 @@ briefing 寫明任務原文、角色邊界（不越權、不 commit）與相關�
 
 - 每次呼叫都明確帶 `model` 與 `effort`（需 Claude Code ≥ 2.1.292）。
 
-## 搭配 herdr
-
-透過 herdr 時，寫測試與實作用 cursor-agent。
-
 ## 驗證
 
 不直接採信 sub agent 的結論：主 agent 自己重跑關鍵測試或指令，並掃一眼 diff 確認沒有溢出範圍。
