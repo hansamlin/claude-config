@@ -15,7 +15,7 @@ briefing 寫明任務原文、角色邊界（不越權、不 commit）與相關�
 | 角色 | `model` | `effort` |
 | --- | --- | --- |
 | 寫測試、實作 | `haiku` | `high` |
-| review 測試 | `opus` | `medium` |
+| review 測試 | `sonnet` | `xhigh` |
 | UI 截圖檢查 | `sonnet` | `high` |
 
 - 每次呼叫都明確帶 `model` 與 `effort`（需 Claude Code ≥ 2.1.292）。
