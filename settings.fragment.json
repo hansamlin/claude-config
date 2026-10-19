@@ -16,7 +16,7 @@
   "autoScrollEnabled": true,
   "autoUpdatesChannel": "latest",
   "editorMode": "normal",
-  "effortLevel": "high",
+  "effortLevel": "xhigh",
   "enableWorkflows": true,
   "enabledPlugins": {
     "andrej-karpathy-skills@karpathy-skills": true,
@@ -59,7 +59,7 @@
   },
   "feedbackDrafts": "notify",
   "language": "繁體中文（台灣用語）",
-  "model": "opus",
+  "model": "sonnet",
   "modelSettings": {
     "claude-fable-5-1": {
       "effortLevel": "medium"
