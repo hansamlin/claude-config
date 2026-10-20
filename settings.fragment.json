@@ -19,23 +19,21 @@
   "effortLevel": "xhigh",
   "enableWorkflows": true,
   "enabledPlugins": {
-    "andrej-karpathy-skills@karpathy-skills": true,
     "code-review@claude-plugins-official": true,
     "code-simplifier@claude-plugins-official": true,
     "context-usage@sam-tools": true,
     "document-skills@anthropic-agent-skills": true,
-    "figma@claude-plugins-official": true,
     "language-reminder@sam-tools": true,
     "skill-creator@claude-plugins-official": true,
     "tsgo-lsp@sam-tools": true
   },
   "env": {
+    "CLAUDE_CODE_DISABLE_ADVISOR_TOOL": "1",
     "CLAUDE_CODE_EXPERIMENTAL_AGENT_TEAMS": "0",
     "CLAUDE_CODE_MAX_CONCURRENT_SUBAGENTS": "20",
     "CLAUDE_CODE_MAX_SUBAGENT_SPAWN_DEPTH": "2",
     "ENABLE_LSP_TOOL": "1",
-    "ENABLE_TOOL_SEARCH": "1",
-    "CLAUDE_CODE_DISABLE_ADVISOR_TOOL": "1"
+    "ENABLE_TOOL_SEARCH": "1"
   },
   "extraKnownMarketplaces": {
     "anthropic-agent-skills": {
@@ -72,7 +70,7 @@
       "effortLevel": "medium"
     },
     "claude-sonnet-5-5": {
-      "effortLevel": "high"
+      "effortLevel": "xhigh"
     }
   },
   "permissions": {
