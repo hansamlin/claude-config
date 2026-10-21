@@ -22,7 +22,7 @@ cd ~/project/claude-config
 
 ```
 /plugin marketplace add hansamlin/claude-config
-/plugin install tsgo-lsp@sam-tools
+/plugin install tsrs-lsp@sam-tools
 /plugin install context-usage@sam-tools
 /plugin install language-reminder@sam-tools
 ```
@@ -35,7 +35,7 @@ private repo 可以直接當 marketplace source——Claude Code 用 SSH clone�
 
 | Plugin | 提供 |
 | --- | --- |
-| `tsgo-lsp` | TypeScript 7 LSP server（[tsrs](https://github.com/oxc-project/tsrs)，Rust 版 TypeScript 7） |
+| `tsrs-lsp` | TypeScript 7 LSP server（[tsrs](https://github.com/oxc-project/tsrs)，Rust 版 TypeScript 7） |
 | `context-usage` | `context-usage` 指令 + 同名 skill：查當前 session 的 context 用量與百分比 |
 | `language-reminder` | `PostToolUse` hook：每次工具呼叫後注入一句繁中提醒，避免回覆漂成英文 |
 
@@ -104,12 +104,14 @@ fragment 裡的路徑寫成 `__CLAUDE_DIR__` 佔位符，安裝時填成實際�
 
 代價是每次工具呼叫多幾十 token，所以提醒刻意寫短。
 
-## tsgo-lsp
+## tsrs-lsp
 
 LSP 由 npm 套件 [`tsrs`](https://github.com/oxc-project/tsrs) 提供，以 `tsrs --lsp --stdio` 啟動，協定與 `tsgo --lsp --stdio` 相同。`vendor/node_modules` 含平台專屬二進位（`@tsrs/darwin-arm64` 等 optionalDependencies），不能進版控，所以 repo 只收 `package.json` + `package-lock.json`（精確鎖在 `0.18.0-ts7.1.0-dev.20260929`，是 dev 預發行版，刻意不用 `^`），由 `install.sh` 在 plugin 的實際安裝位置跑 `npm ci` 還原。
 
-因此 **`/plugin marketplace update` 之後若 LSP 失效，重跑一次 `./install.sh`** 即可——它會找出所有 tsgo-lsp vendor 目錄補裝依賴。
+因此 **`/plugin marketplace update` 之後若 LSP 失效，重跑一次 `./install.sh`** 即可——它會找出所有 tsrs-lsp vendor 目錄補裝依賴。
 
-plugin 名稱沿用 `tsgo-lsp`，避免已安裝機器上的 `enabledPlugins` 殘留舊 key；換 LSP 實作時要升 `plugin.json` 的 `version`，Claude Code 的 plugin cache 以版本號為 key，不升版 `/plugin marketplace update` 不會換內容。
+換 LSP 實作時要升 `plugin.json` 的 `version`：Claude Code 的 plugin cache 以版本號為 key，不升版 `/plugin marketplace update` 不會換內容。
+
+本 plugin 原名 `tsgo-lsp`（當時跑 `typescript@7` 的 `tsc`），換成 tsrs 後改名。settings 合併只加不減，舊機器上的 `tsgo-lsp@sam-tools` 不會自己消失，需手動移除：`claude plugin uninstall tsgo-lsp@sam-tools`。
 
 確認生效：`ps aux | grep -- '--lsp'` 應該看到 plugin 目錄底下的 tsrs。

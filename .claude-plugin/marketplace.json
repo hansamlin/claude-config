@@ -6,8 +6,8 @@
   },
   "plugins": [
     {
-      "name": "tsgo-lsp",
-      "source": "./plugins/tsgo-lsp",
+      "name": "tsrs-lsp",
+      "source": "./plugins/tsrs-lsp",
       "description": "TypeScript 7 LSP server（tsrs，Rust 版 TypeScript 7）"
     },
     {

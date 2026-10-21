@@ -2,7 +2,7 @@
 # 把這個 repo 的設定套用到 ~/.claude。
 #
 # 分工：
-#   plugin（tsgo-lsp / context-usage /     內容由 Claude Code 的 marketplace 管，
+#   plugin（tsrs-lsp / context-usage /     內容由 Claude Code 的 marketplace 管，
 #           language-reminder 等）         本腳本負責註冊來源＋逐一 install
 #
 #   ⚠️ CLAUDE.md 若指名 plugin skill，指到不存在的名字不會報錯、只會靜默跳過流程。所以本腳本刻意把 CLAUDE.md 排在 plugin
@@ -217,7 +217,7 @@ else
     run cp "$REPO/AGENTS.md" "$CLAUDE_DIR/CLAUDE.md"
 fi
 
-step "還原 tsgo-lsp 的 tsrs"
+step "還原 tsrs-lsp 的 tsrs"
 if [ "$CLAUDE_DIR" != "$HOME/.claude" ]; then
     log "CLAUDE_DIR 非預設，略過（plugin 不在此目錄底下）"
     printf '\n▸ 完成（部分步驟因 CLAUDE_DIR 非預設而略過）\n'
@@ -225,10 +225,15 @@ if [ "$CLAUDE_DIR" != "$HOME/.claude" ]; then
 fi
 # vendor/node_modules 不進版控（約 30MB 二進位），從 lockfile 還原。
 # plugin 實際落地位置由 Claude Code 決定，所以用 find 定位。
-# 可能同時存在 marketplaces/ 與 cache/ 兩份，逐一處理而非只取第一個
+# 可能同時存在 marketplaces/ 與 cache/ 兩份，逐一處理而非只取第一個。
+# 兩邊層級不同：marketplaces/<m>/plugins/<p>/vendor、cache/<m>/<p>/<版本>/vendor；
+# plugin 實際執行的是 cache 那份（CLAUDE_PLUGIN_ROOT），所以兩種都要命中。
+# tsrs 套件自己帶了 vendor/ 目錄，而 -path 的 * 會跨 /，故先 prune node_modules，
+# 否則 node_modules/tsrs/vendor 會被誤認成目標。
 # 同上用 here-doc；這裡尤其不能用 pipe，否則 found=1 會留在 subshell 裡失效。
 # find 對讀不到的子目錄會回非 0，`|| true` 以免 set -e 中止。
-VENDORS=$(find "$CLAUDE_DIR/plugins" -type d -path '*tsgo-lsp/vendor' 2>/dev/null || true)
+VENDORS=$(find "$CLAUDE_DIR/plugins" -name node_modules -prune -o \
+    -type d \( -path '*/tsrs-lsp/vendor' -o -path '*/tsrs-lsp/*/vendor' \) -print 2>/dev/null || true)
 found=0
 while IFS= read -r vendor; do
     [ -n "$vendor" ] || continue
@@ -246,7 +251,7 @@ $VENDORS
 EOF
 
 if [ "$found" = 0 ]; then
-    log "找不到已安裝的 tsgo-lsp，plugin 安裝完成後再跑一次這支腳本"
+    log "找不到已安裝的 tsrs-lsp，plugin 安裝完成後再跑一次這支腳本"
 fi
 
 step "完成"
