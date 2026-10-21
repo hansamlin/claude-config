@@ -25,7 +25,7 @@
     "document-skills@anthropic-agent-skills": true,
     "language-reminder@sam-tools": true,
     "skill-creator@claude-plugins-official": true,
-    "tsgo-lsp@sam-tools": true
+    "tsrs-lsp@sam-tools": true
   },
   "env": {
     "CLAUDE_CODE_DISABLE_ADVISOR_TOOL": "1",

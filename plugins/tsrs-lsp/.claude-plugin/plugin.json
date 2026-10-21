@@ -1,5 +1,5 @@
 {
-  "name": "tsgo-lsp",
+  "name": "tsrs-lsp",
   "version": "1.1.0",
   "description": "TypeScript 7 LSP server（tsrs，Rust 版 TypeScript 7）",
   "author": {
