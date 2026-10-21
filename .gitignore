@@ -1,4 +1,4 @@
-# tsgo-lsp 的 TypeScript 二進位（約 30MB），靠 vendor/package-lock.json + npm ci 還原
+# tsgo-lsp 的 tsrs 平台二進位，靠 vendor/package-lock.json + npm ci 還原
 node_modules/
 
 # install.sh 產生的備份
