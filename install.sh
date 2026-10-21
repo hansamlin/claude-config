@@ -217,7 +217,7 @@ else
     run cp "$REPO/AGENTS.md" "$CLAUDE_DIR/CLAUDE.md"
 fi
 
-step "還原 tsgo-lsp 的 TypeScript"
+step "還原 tsgo-lsp 的 tsrs"
 if [ "$CLAUDE_DIR" != "$HOME/.claude" ]; then
     log "CLAUDE_DIR 非預設，略過（plugin 不在此目錄底下）"
     printf '\n▸ 完成（部分步驟因 CLAUDE_DIR 非預設而略過）\n'
@@ -233,7 +233,7 @@ found=0
 while IFS= read -r vendor; do
     [ -n "$vendor" ] || continue
     found=1
-    if [ -x "$vendor/node_modules/.bin/tsc" ]; then
+    if [ -x "$vendor/node_modules/.bin/tsrs" ]; then
         log "已安裝，略過：$vendor"
     else
         log "npm ci → $vendor"
@@ -258,7 +258,7 @@ cat <<EOF
     context-usage   確認「來源」那行是 statusline 快取（不是 transcript）
     在 Claude Code 裡執行 /hooks 確認 UserPromptSubmit、PreToolUse、
       PostToolUse、PostCompact 四條都有出現（2.3.0 起沒有 SubagentStop）
-    ps aux | grep -- '--lsp'   確認 LSP 跑的是 tsgo
+    ps aux | grep -- '--lsp'   確認 LSP 跑的是 tsrs
 
   之後 repo 有更新時，plugin 部分用 /plugin marketplace update 即可，
   只有 CLAUDE.md / statusline.sh / settings 變動才需要再跑這支腳本。

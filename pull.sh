@@ -4,7 +4,7 @@
 # 範圍限於「plugin 管不到、又容易在本機被改掉」的三樣：
 #   CLAUDE.md（repo 內為 AGENTS.md）、statusline.sh、settings.json 的個人設定
 #
-# plugin 內容（hook script、skill、tsgo 設定）不在此列——那些請直接在
+# plugin 內容（hook script、skill、LSP 設定）不在此列——那些請直接在
 # repo 裡改，再用 /plugin marketplace update 讓 Claude Code 取得。~/.claude/plugins
 # 底下是 Claude Code 的快取，改那裡會被下次更新蓋掉。
 #

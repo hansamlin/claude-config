@@ -12,7 +12,7 @@ cd ~/project/claude-config
 ./install.sh
 ```
 
-`install.sh` 會註冊並更新 marketplace、安裝 `enabledPlugins` 列出的每一個 plugin、還原 tsgo 的 TypeScript、並把 `AGENTS.md`（裝成 `~/.claude/CLAUDE.md`）/ `statusline.sh` / settings 個人設定套進 `~/.claude`。需要 `jq`。
+`install.sh` 會註冊並更新 marketplace、安裝 `enabledPlugins` 列出的每一個 plugin、還原 tsrs、並把 `AGENTS.md`（裝成 `~/.claude/CLAUDE.md`）/ `statusline.sh` / settings 個人設定套進 `~/.claude`。需要 `jq`。
 
 `enabledPlugins` 裡值為 `false` 的 plugin **照樣安裝，但裝完會被 `claude plugin disable` 關掉**——目前沒有任何項目是 `false`。
 
@@ -35,7 +35,7 @@ private repo 可以直接當 marketplace source——Claude Code 用 SSH clone�
 
 | Plugin | 提供 |
 | --- | --- |
-| `tsgo-lsp` | TypeScript 7 native (tsgo) LSP server |
+| `tsgo-lsp` | TypeScript 7 LSP server（[tsrs](https://github.com/oxc-project/tsrs)，Rust 版 TypeScript 7） |
 | `context-usage` | `context-usage` 指令 + 同名 skill：查當前 session 的 context 用量與百分比 |
 | `language-reminder` | `PostToolUse` hook：每次工具呼叫後注入一句繁中提醒，避免回覆漂成英文 |
 
@@ -106,8 +106,10 @@ fragment 裡的路徑寫成 `__CLAUDE_DIR__` 佔位符，安裝時填成實際�
 
 ## tsgo-lsp
 
-`vendor/node_modules` 是平台專屬二進位（`@typescript/typescript-darwin-arm64`），不能進版控，所以 repo 只收 `package.json` + `package-lock.json`（版本鎖在 7.0.2），由 `install.sh` 在 plugin 的實際安裝位置跑 `npm ci` 還原。
+LSP 由 npm 套件 [`tsrs`](https://github.com/oxc-project/tsrs) 提供，以 `tsrs --lsp --stdio` 啟動，協定與 `tsgo --lsp --stdio` 相同。`vendor/node_modules` 含平台專屬二進位（`@tsrs/darwin-arm64` 等 optionalDependencies），不能進版控，所以 repo 只收 `package.json` + `package-lock.json`（精確鎖在 `0.18.0-ts7.1.0-dev.20260929`，是 dev 預發行版，刻意不用 `^`），由 `install.sh` 在 plugin 的實際安裝位置跑 `npm ci` 還原。
 
 因此 **`/plugin marketplace update` 之後若 LSP 失效，重跑一次 `./install.sh`** 即可——它會找出所有 tsgo-lsp vendor 目錄補裝依賴。
 
-確認生效：`ps aux | grep -- '--lsp'` 應該看到 plugin 目錄底下的 tsc。
+plugin 名稱沿用 `tsgo-lsp`，避免已安裝機器上的 `enabledPlugins` 殘留舊 key；換 LSP 實作時要升 `plugin.json` 的 `version`，Claude Code 的 plugin cache 以版本號為 key，不升版 `/plugin marketplace update` 不會換內容。
+
+確認生效：`ps aux | grep -- '--lsp'` 應該看到 plugin 目錄底下的 tsrs。

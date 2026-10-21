@@ -3,6 +3,6 @@
   "private": true,
   "version": "1.0.0",
   "dependencies": {
-    "typescript": "^7.0.2"
+    "tsrs": "0.18.0-ts7.1.0-dev.20260929"
   }
 }

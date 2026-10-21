@@ -1,14 +1,14 @@
 {
   "name": "tsgo-lsp",
-  "version": "1.0.0",
-  "description": "TypeScript 7 native (tsgo) LSP server",
+  "version": "1.1.0",
+  "description": "TypeScript 7 LSP server（tsrs，Rust 版 TypeScript 7）",
   "author": {
     "name": "Sam Lin",
     "email": "sam82520@gmail.com"
   },
   "lspServers": {
     "typescript": {
-      "command": "${CLAUDE_PLUGIN_ROOT}/vendor/node_modules/.bin/tsc",
+      "command": "${CLAUDE_PLUGIN_ROOT}/vendor/node_modules/.bin/tsrs",
       "args": ["--lsp", "--stdio"],
       "extensionToLanguage": {
         ".ts": "typescript",
