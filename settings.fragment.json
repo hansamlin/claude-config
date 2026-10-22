@@ -16,7 +16,7 @@
   "autoScrollEnabled": true,
   "autoUpdatesChannel": "latest",
   "editorMode": "normal",
-  "effortLevel": "xhigh",
+  "effortLevel": "medium",
   "enableWorkflows": true,
   "enabledPlugins": {
     "code-review@claude-plugins-official": true,
@@ -51,7 +51,7 @@
   },
   "feedbackDrafts": "notify",
   "language": "繁體中文（台灣用語）",
-  "model": "sonnet",
+  "model": "opus",
   "modelSettings": {
     "claude-fable-5-1": {
       "effortLevel": "medium"
