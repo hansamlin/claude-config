@@ -16,16 +16,17 @@ briefing 寫明任務原文、角色邊界（不越權、不 commit）與相關�
 | 角色 | `model` | `effort` |
 | --- | --- | --- |
 | 寫測試、實作 | `haiku` | `high` |
-| review 測試 | `sonnet` | `xhigh` |
-| UI 截圖檢查 | `sonnet` | `high` |
+| review 測試 | `opus` | `medium` |
+| UI 截圖檢查 | `opus` | `medium` |
 
 - 每次呼叫都明確帶 `model` 與 `effort`（需 Claude Code ≥ 2.1.292）。
+- 只要用 `opus`（含顧問），`effort` 一律 `medium`。
 
 ## 驗證
 
 不直接採信 sub agent 的結論：主 agent 自己重跑關鍵測試或指令，並掃一眼 diff 確認沒有溢出範圍。
 
-UI 截圖檢查派 `sonnet` sub agent 看，主 agent 只收結論。
+UI 截圖檢查派 `opus` sub agent 看，主 agent 只收結論。
 
 sub agent 越權（改了測試檔、寫測試的順手實作、自行 commit）時，明講越權事實，不因結果是綠的就採信。用 git 還原到越權前的基準重新判定；測試被放寬就作廢實作換人重做。先有實作、後補的測試不可信，要由沒看過實作的人依任務原文重寫。下次派同類工作時把漏掉的約束補進 briefing。
 
