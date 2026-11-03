@@ -12,7 +12,7 @@ cd ~/project/claude-config
 ./install.sh
 ```
 
-`install.sh` 會註冊並更新 marketplace、安裝 `enabledPlugins` 列出的每一個 plugin、還原 tsrs、並把 `AGENTS.md`（裝成 `~/.claude/CLAUDE.md`）/ `statusline.sh` / settings 個人設定套進 `~/.claude`。需要 `jq`。
+`install.sh` 會註冊並更新 marketplace、安裝 `enabledPlugins` 列出的每一個 plugin、全域安裝 tsrs、並把 `AGENTS.md`（裝成 `~/.claude/CLAUDE.md`）/ `statusline.sh` / settings 個人設定套進 `~/.claude`。需要 `jq`。
 
 `enabledPlugins` 裡值為 `false` 的 plugin **照樣安裝，但裝完會被 `claude plugin disable` 關掉**——目前沒有任何項目是 `false`。
 
@@ -106,12 +106,18 @@ fragment 裡的路徑寫成 `__CLAUDE_DIR__` 佔位符，安裝時填成實際�
 
 ## tsrs-lsp
 
-LSP 由 npm 套件 [`tsrs`](https://github.com/oxc-project/tsrs) 提供，以 `tsrs --lsp --stdio` 啟動，協定與 `tsgo --lsp --stdio` 相同。`vendor/node_modules` 含平台專屬二進位（`@tsrs/darwin-arm64` 等 optionalDependencies），不能進版控，所以 repo 只收 `package.json` + `package-lock.json`（精確鎖在 `0.18.0-ts7.1.0-dev.20260929`，是 dev 預發行版，刻意不用 `^`），由 `install.sh` 在 plugin 的實際安裝位置跑 `npm ci` 還原。
+本 plugin 照官方 LSP plugin 的做法：**plugin 只放 LSP 設定，不打包執行檔**。`plugin.json` 的 `command` 是裸指令 `tsrs`，從 PATH 找，以 `tsrs --lsp --stdio` 啟動，協定與 `tsgo --lsp --stdio` 相同。tsrs 本體是 npm 套件 [`tsrs`](https://github.com/oxc-project/tsrs)。
 
-因此 **`/plugin marketplace update` 之後若 LSP 失效，重跑一次 `./install.sh`** 即可——它會找出所有 tsrs-lsp vendor 目錄補裝依賴。
+所以需要先全域安裝，版本精確釘在 `0.20.1-ts7.1.0-beta`（預發行版，刻意不用 `^`）：
 
-換 LSP 實作時要升 `plugin.json` 的 `version`：Claude Code 的 plugin cache 以版本號為 key，不升版 `/plugin marketplace update` 不會換內容。
+```bash
+npm install -g tsrs@0.20.1-ts7.1.0-beta
+```
+
+`install.sh` 會代為執行這一行（已是該版本就略過；失敗只印警告，需手動補裝）。只用 `/plugin install tsrs-lsp@sam-tools` 而不跑 `install.sh` 的人，也要自己全域安裝 tsrs，plugin 不會幫你裝。
+
+升級 tsrs 不必升 plugin 版本——plugin 裡沒有 tsrs 的版本資訊，換全域版本即可。反過來，改 plugin 內容（例如 `command` 或 LSP 設定）時要升 `plugin.json` 的 `version`：Claude Code 的 plugin cache 以版本號為 key，不升版 `/plugin marketplace update` 不會換內容。
 
 本 plugin 原名 `tsgo-lsp`（當時跑 `typescript@7` 的 `tsc`），換成 tsrs 後改名。settings 合併只加不減，舊機器上的 `tsgo-lsp@sam-tools` 不會自己消失，需手動移除：`claude plugin uninstall tsgo-lsp@sam-tools`。
 
-確認生效：`ps aux | grep -- '--lsp'` 應該看到 plugin 目錄底下的 tsrs。
+確認生效：`which tsrs` 找得到全域安裝的 tsrs，LSP 跑起來後 `ps aux | grep -- '--lsp'` 應該看到它。
