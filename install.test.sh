@@ -112,6 +112,13 @@ echo "unexpected: \$*"
 exit 0
 STUB
     chmod +x "$H/bin/claude"
+    # npm stub：install.sh 會 `npm install -g tsrs`，測試不能真的動到全域 npm
+    cat > "$H/bin/npm" <<STUB
+#!/bin/sh
+printf 'npm %s\n' "\$*" >> "$CALLS"
+exit 0
+STUB
+    chmod +x "$H/bin/npm"
 }
 
 run_install() {

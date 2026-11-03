@@ -217,42 +217,32 @@ else
     run cp "$REPO/AGENTS.md" "$CLAUDE_DIR/CLAUDE.md"
 fi
 
-step "還原 tsrs-lsp 的 tsrs"
-if [ "$CLAUDE_DIR" != "$HOME/.claude" ]; then
-    log "CLAUDE_DIR 非預設，略過（plugin 不在此目錄底下）"
-    printf '\n▸ 完成（部分步驟因 CLAUDE_DIR 非預設而略過）\n'
-    exit 0
+step "全域安裝 tsrs（tsrs-lsp 的 LSP 執行檔）"
+# plugin 不打包執行檔：plugin.json 的 command 是裸指令 tsrs，從 PATH 找，所以要全域裝。
+# 與 CLAUDE_DIR 無關，任何情況都會執行。版本精確釘死——這是預發行版，刻意不用 ^。
+# 升級時改這一行，並同步 README 的 tsrs-lsp 段落。
+TSRS_VERSION='0.20.1-ts7.1.0-beta'
+TSRS_NOW=''
+if command -v tsrs >/dev/null 2>&1; then
+    TSRS_NOW=$(tsrs --version 2>/dev/null || true)
 fi
-# vendor/node_modules 不進版控（約 30MB 二進位），從 lockfile 還原。
-# plugin 實際落地位置由 Claude Code 決定，所以用 find 定位。
-# 可能同時存在 marketplaces/ 與 cache/ 兩份，逐一處理而非只取第一個。
-# 兩邊層級不同：marketplaces/<m>/plugins/<p>/vendor、cache/<m>/<p>/<版本>/vendor；
-# plugin 實際執行的是 cache 那份（CLAUDE_PLUGIN_ROOT），所以兩種都要命中。
-# tsrs 套件自己帶了 vendor/ 目錄，而 -path 的 * 會跨 /，故先 prune node_modules，
-# 否則 node_modules/tsrs/vendor 會被誤認成目標。
-# 同上用 here-doc；這裡尤其不能用 pipe，否則 found=1 會留在 subshell 裡失效。
-# find 對讀不到的子目錄會回非 0，`|| true` 以免 set -e 中止。
-VENDORS=$(find "$CLAUDE_DIR/plugins" -name node_modules -prune -o \
-    -type d \( -path '*/tsrs-lsp/vendor' -o -path '*/tsrs-lsp/*/vendor' \) -print 2>/dev/null || true)
-found=0
-while IFS= read -r vendor; do
-    [ -n "$vendor" ] || continue
-    found=1
-    if [ -x "$vendor/node_modules/.bin/tsrs" ]; then
-        log "已安裝，略過：$vendor"
-    else
-        log "npm ci → $vendor"
+# 用子字串比對，容許 --version 輸出帶前綴（例如 "tsrs 0.18.0-…"）。
+case "$TSRS_NOW" in
+    *"${TSRS_VERSION}"*)
+        log "已是 tsrs@${TSRS_VERSION}，略過" ;;
+    *)
+        log "npm install -g tsrs@${TSRS_VERSION}"
         if [ "$DRY_RUN" = 0 ]; then
-            (cd "$vendor" && npm ci >/dev/null 2>&1) || log "⚠ npm ci 失敗，請手動在該目錄執行"
+            # 失敗只印警告、不中斷，也不計入底下的失敗彙總：tsrs 缺了只是 LSP 不能用。
+            if out=$(npm install -g "tsrs@${TSRS_VERSION}" 2>&1); then
+                printf '%s\n' "$out" | tail -1 | sed 's/^/    /'
+            else
+                printf '%s\n' "$out" | sed 's/^/    /'
+                log "⚠ npm install -g 失敗，請手動執行：npm install -g tsrs@${TSRS_VERSION}"
+            fi
         fi
-    fi
-done <<EOF
-$VENDORS
-EOF
-
-if [ "$found" = 0 ]; then
-    log "找不到已安裝的 tsrs-lsp，plugin 安裝完成後再跑一次這支腳本"
-fi
+        ;;
+esac
 
 step "完成"
 cat <<EOF

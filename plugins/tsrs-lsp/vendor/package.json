@@ -1,8 +1,0 @@
-{
-  "name": "tsrs-lsp-vendor",
-  "private": true,
-  "version": "1.0.0",
-  "dependencies": {
-    "tsrs": "0.18.0-ts7.1.0-dev.20260929"
-  }
-}
