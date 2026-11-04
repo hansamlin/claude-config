@@ -1,0 +1,9 @@
+{
+  "name": "gitlab-wait",
+  "version": "1.0.0",
+  "description": "在背景追蹤 GitLab MR 合併與 pipeline 結果（wait-mr-merged / wait-pipeline），不用手動 sleep 輪詢",
+  "author": {
+    "name": "Sam Lin",
+    "email": "sam82520@gmail.com"
+  }
+}
