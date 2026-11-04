@@ -1,0 +1,4 @@
+#!/bin/sh
+# Claude Code 會把 plugin 的 bin/ 加進 PATH，skill 直接打指令名即可。
+# 只是轉呼叫，實作在 ../scripts/wait-pipeline.sh。
+exec sh "$(dirname "$0")/../scripts/wait-pipeline.sh" "$@"

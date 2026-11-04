@@ -25,6 +25,7 @@ cd ~/project/claude-config
 /plugin install tsrs-lsp@sam-tools
 /plugin install context-usage@sam-tools
 /plugin install language-reminder@sam-tools
+/plugin install gitlab-wait@sam-tools
 ```
 
 private repo 可以直接當 marketplace source——Claude Code 用 SSH clone，有金鑰就拉得到。
@@ -38,6 +39,7 @@ private repo 可以直接當 marketplace source——Claude Code 用 SSH clone�
 | `tsrs-lsp` | TypeScript 7 LSP server（[tsrs](https://github.com/oxc-project/tsrs)，Rust 版 TypeScript 7） |
 | `context-usage` | `context-usage` 指令 + 同名 skill：查當前 session 的 context 用量與百分比 |
 | `language-reminder` | `PostToolUse` hook：每次工具呼叫後注入一句繁中提醒，避免回覆漂成英文 |
+| `gitlab-wait` | `wait-mr-merged`／`wait-pipeline` 指令 + 同名 skill：在背景追蹤 GitLab MR 合併與 pipeline 結果（需 `glab` 已登入） |
 
 ⚠️ `context-usage` 的**百分比**需要 `statusline.sh` 配合（見下一節）——context window 大小只出現在
 Claude Code 餵給 statusline hook 的 payload 裡，transcript 沒記。只裝 plugin 不跑 `install.sh` 的話，

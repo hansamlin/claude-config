@@ -19,6 +19,11 @@
       "name": "language-reminder",
       "source": "./plugins/language-reminder",
       "description": "PostToolUse 注入繁中提醒，避免長工具迴圈中回覆漂成英文"
+    },
+    {
+      "name": "gitlab-wait",
+      "source": "./plugins/gitlab-wait",
+      "description": "背景追蹤 GitLab MR 合併與 pipeline 結果（wait-mr-merged / wait-pipeline skill）"
     }
   ]
 }

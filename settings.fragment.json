@@ -23,6 +23,7 @@
     "code-simplifier@claude-plugins-official": true,
     "context-usage@sam-tools": true,
     "document-skills@anthropic-agent-skills": true,
+    "gitlab-wait@sam-tools": true,
     "language-reminder@sam-tools": true,
     "skill-creator@claude-plugins-official": true,
     "tsrs-lsp@sam-tools": true
