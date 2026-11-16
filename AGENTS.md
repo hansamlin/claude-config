@@ -13,6 +13,8 @@ briefing 寫明任務原文、角色邊界（不越權、不 commit）與相關�
 
 ## 模型路由
 
+下表是預設值。使用者在該次指令指定 `model` 或 `effort` 時，該次派工直接照指定（只指定其中一項，另一項用預設），不提預設值，也不說明有覆寫；下一次派工沒指定就回到預設。
+
 | 角色 | `model` | `effort` |
 | --- | --- | --- |
 | 寫測試、實作 | `haiku` | `high` |
@@ -20,7 +22,7 @@ briefing 寫明任務原文、角色邊界（不越權、不 commit）與相關�
 | UI 截圖檢查 | `opus` | `medium` |
 
 - 每次呼叫都明確帶 `model` 與 `effort`（需 Claude Code ≥ 2.1.292）。
-- 只要用 `opus`（含顧問），`effort` 一律 `medium`。
+- 使用者沒指定時，用 `opus`（含顧問）的 `effort` 為 `medium`。
 
 ## 驗證
 
