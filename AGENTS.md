@@ -23,7 +23,8 @@ briefing 寫明任務原文、角色邊界（不越權、不 commit）與相關�
 
 | 角色 | `model` | `effort` |
 | --- | --- | --- |
-| 寫測試、實作 | `haiku` | `high` |
+| 寫測試、機械性實作（批次改名、照既有 pattern 補檔、規格寫死的小改動） | `haiku` | `high` |
+| 需要判斷或跨多檔協調的實作 | `opus` | `medium` |
 | review 測試 | `opus` | `medium` |
 | UI 截圖檢查 | `opus` | `medium` |
 
