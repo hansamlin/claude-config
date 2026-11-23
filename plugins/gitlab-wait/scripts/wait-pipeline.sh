@@ -1,7 +1,7 @@
 #!/bin/sh
 # 輪詢 GitLab pipeline，直到跑完。合併後要確認 main 的 pipeline 成功、或要等 MR 的 pipeline 跑完時，
 # 在背景用它等。要在專案目錄（或其 worktree）裡執行，`glab api` 的 :fullpath 由 git remote 決定。
-# 用法：wait-pipeline <sha|mr|id> <值> [intervalSeconds] [maxSeconds]
+# 用法：wait-pipeline [--no-retry] <sha|mr|id> <值> [intervalSeconds] [maxSeconds]
 #   （plugin 的 bin/ 在 PATH 上；直接執行本檔則用 sh wait-pipeline.sh …）
 #   sha <rev>：該 commit 的 pipeline。rev 是 git 解析得到的 commit（origin/main、HEAD、短 sha 都行），
 #              解析前要先 git fetch。pipeline 還沒建立時會繼續等，不會誤抓前一個 commit 的結果。
@@ -10,14 +10,22 @@
 #   例：wait-pipeline sha 88d213f
 #       wait-pipeline mr 114 15 300
 #       wait-pipeline id 49862
-# 預設每 20 秒查一次、最多等 540 秒。找到 pipeline 之後就鎖定它的編號，之後新建的 pipeline 不影響。
-# 結束碼：0 success；1 failed／canceled／skipped／manual（輸出狀態與網址）；2 參數錯誤；3 逾時。
+# 預設每 20 秒查一次、最多等 1800 秒。找到 pipeline 之後就鎖定它的編號，之後新建的 pipeline 不影響。
+# pipeline failed 且失敗的 job 都是 runner 連不到 GitLab 這類暫時性錯誤時，自動 retry 那些 job
+# （同名 job 最多 2 次）並繼續等同一條 pipeline，規則見 gitlab-retry.sh；--no-retry 關閉。
+# 結束碼：0 success；1 failed（不可自動 retry）／canceled／skipped／manual（輸出狀態與網址）；2 參數錯誤；3 逾時。
+. "$(dirname "$0")/gitlab-retry.sh"
+RETRY=1
+if [ "$1" = "--no-retry" ]; then
+  RETRY=0
+  shift
+fi
 SCOPE="$1"
 VALUE="$2"
 INTERVAL="${3:-20}"
-MAX="${4:-540}"
+MAX="${4:-1800}"
 usage() {
-  echo "usage: wait-pipeline <sha|mr|id> <value> [intervalSeconds] [maxSeconds]" >&2
+  echo "usage: wait-pipeline [--no-retry] <sha|mr|id> <value> [intervalSeconds] [maxSeconds]" >&2
   exit 2
 }
 case "$SCOPE" in
@@ -91,11 +99,17 @@ while :; do
   case "$status" in
     success)
       echo "success: pipeline=$PID url=$url"
+      gitlab_retry_summary
       exit 0
       ;;
     failed | canceled | skipped | manual)
-      echo "$status: pipeline=$PID url=$url"
-      exit 1
+      if [ "$status" = failed ] && [ "$RETRY" = 1 ] && gitlab_retry_transient "$PID"; then
+        : # 已 retry，繼續等同一條 pipeline
+      else
+        echo "$status: pipeline=$PID url=$url"
+        gitlab_retry_summary
+        exit 1
+      fi
       ;;
   esac
   if [ "$elapsed" -ge "$MAX" ]; then
