@@ -10,7 +10,7 @@ pipeline 要跑幾分鐘，時間無法預估。**不要自己用 `sleep` 或反
 ## 用法
 
 ```sh
-wait-pipeline <sha|mr|id> <值> [intervalSeconds] [maxSeconds]
+wait-pipeline [--no-retry] <sha|mr|id> <值> [intervalSeconds] [maxSeconds]
 ```
 
 指令由 plugin 的 `bin/` 加進 `PATH`，直接打指令名，**不要寫死絕對路徑**。若 `command -v wait-pipeline` 找不到（plugin 剛裝、這個 session 的 `PATH` 還是舊的），用 `find ~/.claude/plugins/cache -name wait-pipeline.sh | tail -1` 定位後以 `sh <路徑>` 執行。需要 `glab` 已登入，且在 GitLab 專案目錄（或其 worktree）裡執行。
@@ -22,16 +22,27 @@ wait-pipeline <sha|mr|id> <值> [intervalSeconds] [maxSeconds]
 | `id` | pipeline 編號 | 已經知道是哪一條（例如使用者貼了網址） |
 
 - `intervalSeconds`：查詢間隔，預設 20。
-- `maxSeconds`：最長等待，預設 540。
+- `maxSeconds`：最長等待，預設 1800（要涵蓋自動 retry 後重跑的時間）。
+- `--no-retry`：只能放第一個參數，關閉下面的自動 retry。
 
-用 Bash 工具呼叫時帶 `run_in_background: true` 與 `timeout: 600000`（要比 `maxSeconds` 長，腳本的逾時才會先到）。腳本結束時會通知你，**不要**輪詢輸出檔、不要 `sleep` 等它。找到 pipeline 之後會鎖定它的編號，之後新建的 pipeline 不影響。
+用 Bash 工具呼叫時帶 `run_in_background: true`（背景執行不受 Bash 的 `timeout` 限制，由腳本自己的 `maxSeconds` 逾時）。腳本結束時會通知你，**不要**輪詢輸出檔、不要 `sleep` 等它。找到 pipeline 之後會鎖定它的編號，之後新建的 pipeline 不影響。
+
+## 自動 retry 暫時性連線失敗
+
+自架 runner 偶爾連不到 GitLab（job log 結尾像 `fatal: unable to access 'https://…': Failed to connect to … port 443 … Could not connect to server`），這種 job 重跑就會過。pipeline 變成 `failed` 時，腳本會：
+
+1. 列出失敗的 job（忽略 `allow_failure`），讀每個 job trace 的最後 200 行，比對 `Failed to connect to … port N`、`Could not resolve host`、`unable to access 'https://`、`Could not connect to server`、`Connection timed out`、`Connection reset by peer`、`The requested URL returned error: 502/503/504`；`failure_reason` 是 `runner_system_failure`／`stuck_or_timeout_failure` 也算。這類失敗的 `failure_reason` 通常是 `script_failure`，所以要看 trace。
+2. **全部**失敗 job 都屬於這類、且同名 job 都還沒 retry 滿 2 次，才逐一 retry（輸出 `retry: job=… name=… attempt=1/2`），然後繼續等同一條 pipeline。次數由 GitLab 上同名 job 的歷史算，重跑腳本不會重置。
+3. 只要有一個是真的失敗（測試、lint 等）或已滿 2 次，就不 retry，照下表結束碼 1；有 retry 過時會多印 `retried: <name> x<次數>`，不 retry 的原因與 job 網址也會印出。
+
+需要 `jq`；沒有就不 retry。這是腳本內建的有限次數 retry，**你自己仍不要手動重跑 pipeline 或 job**。
 
 ## 結束碼與下一步
 
 | 結束碼 | 意思 | 下一步 |
 |---|---|---|
 | 0 | `success: pipeline=… url=…` | 可以往下做。合併後確認 `main` 時，pipeline 成功才算收尾的第一步完成 |
-| 1 | `failed`、`canceled`、`skipped` 或 `manual`（要有人手動觸發 job），輸出狀態與網址 | 回報使用者並附網址，不要當作成功；不要自行重跑 pipeline |
+| 1 | `failed`（不可自動 retry，或 retry 滿 2 次仍失敗）、`canceled`、`skipped` 或 `manual`（要有人手動觸發 job），輸出狀態與網址 | 回報使用者並附網址與失敗 job（有 `retried:` 就一併說明 retry 過哪些），不要當作成功；不要自行重跑 pipeline |
 | 2 | 參數錯誤、`sha` 解析不到 commit，或啟動時從 git remote 解析不到 GitLab 專案（會印出 glab 的回應） | 補參數；解析不到 commit 就先 `git fetch origin`；解析不到專案就確認在 repo 裡執行、`glab` 登入與網路正常 |
 | 3 | 逾時，輸出 `pipeline=<編號>` 或 `not found` 與目前狀態 | 有編號且是 `running`／`pending` 就再執行一次（可改用 `id <編號>`）；`not found` 持續出現，先確認 commit 對不對、該 ref 有沒有觸發 pipeline，再回報使用者 |
 
