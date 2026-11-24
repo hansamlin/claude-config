@@ -250,6 +250,7 @@ cat <<EOF
     bash "$REPO/install.test.sh"
     bash "$REPO/plugins/context-usage/scripts/context-usage.test.sh"
     bash "$REPO/plugins/language-reminder/scripts/remind.test.sh"
+    bash "$REPO/plugins/issue-session-title/scripts/title.test.sh"
     context-usage   確認「來源」那行是 statusline 快取（不是 transcript）
     在 Claude Code 裡執行 /hooks 確認 UserPromptSubmit、PreToolUse、
       PostToolUse、PostCompact 四條都有出現（2.3.0 起沒有 SubagentStop）
