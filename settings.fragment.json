@@ -36,7 +36,8 @@
     "CLAUDE_CODE_MAX_CONCURRENT_SUBAGENTS": "20",
     "CLAUDE_CODE_MAX_SUBAGENT_SPAWN_DEPTH": "2",
     "ENABLE_LSP_TOOL": "1",
-    "ENABLE_TOOL_SEARCH": "1"
+    "ENABLE_TOOL_SEARCH": "1",
+    "CLAUDE_CODE_SILENT_TURN_REMINDER": "使用者一段時間沒收到你的訊息了，用繁體中文簡短說明你正在做什麼然後繼續。"
   },
   "extraKnownMarketplaces": {
     "anthropic-agent-skills": {
