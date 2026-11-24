@@ -24,6 +24,11 @@
       "name": "gitlab-wait",
       "source": "./plugins/gitlab-wait",
       "description": "背景追蹤 GitLab MR 合併與 pipeline 結果（wait-mr-merged / wait-pipeline skill）"
+    },
+    {
+      "name": "issue-session-title",
+      "source": "./plugins/issue-session-title",
+      "description": "session 還沒有名稱時，依 prompt 提到的 issue 編號自動命名成 issue-<編號>"
     }
   ]
 }

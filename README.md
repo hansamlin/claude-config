@@ -26,6 +26,7 @@ cd ~/project/claude-config
 /plugin install context-usage@sam-tools
 /plugin install language-reminder@sam-tools
 /plugin install gitlab-wait@sam-tools
+/plugin install issue-session-title@sam-tools
 ```
 
 private repo 可以直接當 marketplace source——Claude Code 用 SSH clone，有金鑰就拉得到。
@@ -40,6 +41,7 @@ private repo 可以直接當 marketplace source——Claude Code 用 SSH clone�
 | `context-usage` | `context-usage` 指令 + 同名 skill：查當前 session 的 context 用量與百分比 |
 | `language-reminder` | `PostToolUse` hook：每次工具呼叫後注入一句繁中提醒，避免回覆漂成英文 |
 | `gitlab-wait` | `wait-mr-merged`／`wait-pipeline` 指令 + 同名 skill：在背景追蹤 GitLab MR 合併與 pipeline 結果（需 `glab` 已登入） |
+| `issue-session-title` | `UserPromptSubmit` hook：session 還沒有名稱時，prompt 提到 issue 編號就自動命名成 `issue-<編號>`（等同 `/rename`，terminal tab 標題跟著變） |
 
 ⚠️ `context-usage` 的**百分比**需要 `statusline.sh` 配合（見下一節）——context window 大小只出現在
 Claude Code 餵給 statusline hook 的 payload 裡，transcript 沒記。只裝 plugin 不跑 `install.sh` 的話，
@@ -105,6 +107,16 @@ fragment 裡的路徑寫成 `__CLAUDE_DIR__` 佔位符，安裝時填成實際�
 `remind.sh` 掛在 `PostToolUse`（不設 matcher，所有工具都觸發），經 `hookSpecificOutput.additionalContext` 在每個工具結果旁注入一句繁中提醒，讓指示永遠貼近最新 context。輸出是固定字串，不讀 stdin 內容、不依賴 `jq`。sub agent 裡的工具呼叫同樣會觸發，提醒一併生效。
 
 代價是每次工具呼叫多幾十 token，所以提醒刻意寫短。
+
+## issue-session-title
+
+處理 issue 時習慣用 `/rename issue-<編號>` 命名 session，讓 terminal tab 一眼看出是哪個 issue；不命名的話 tab 顯示的是 Claude Code 自動產生、描述要做什麼的主題標題，通常偏長。
+
+`title.sh` 掛在 `UserPromptSubmit`，從 prompt 抓第一個 `issue 98`／`issue #98`／`issues/98`（GitLab 網址）寫法，回傳 `hookSpecificOutput.sessionTitle: "issue-98"`。Claude Code 把它寫進跟 `/rename` 同一個欄位（transcript 的 `custom-title` 紀錄），terminal 標題的優先順序裡它排在自動主題標題前面。
+
+只在 session **還沒有名稱**時命名：transcript 已有 `custom-title`（之前自動命名過，或手動 `/rename` 過）就不動，避免對話中途提到別的 issue 時 tab 標題突然改掉。要換名稱直接 `/rename`。
+
+需要 `jq`。`terminalTitleFromRename` 設成 `false` 或設了 `CLAUDE_CODE_DISABLE_TERMINAL_TITLE` 時，session 照樣會改名，但 tab 標題不會跟著變。
 
 ## tsrs-lsp
 

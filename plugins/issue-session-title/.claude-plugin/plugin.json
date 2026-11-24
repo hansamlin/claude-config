@@ -1,0 +1,9 @@
+{
+  "name": "issue-session-title",
+  "version": "1.0.0",
+  "description": "prompt 提到 issue 編號時，把還沒有名稱的 session 自動命名成 issue-<編號>（terminal tab 標題跟著變）",
+  "author": {
+    "name": "Sam Lin",
+    "email": "sam82520@gmail.com"
+  }
+}
