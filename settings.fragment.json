@@ -9,7 +9,7 @@
     "sessionUrl": false
   },
   "autoCompactEnabled": true,
-  "autoCompactWindow": 600000,
+  "autoCompactWindow": 400000,
   "autoContinueAtUsageLimit": true,
   "autoDreamEnabled": true,
   "autoMemoryEnabled": false,
